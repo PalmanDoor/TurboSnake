@@ -1302,6 +1302,25 @@ public class SnakeApp extends SimpleApplication {
         };
         private static final float PIT_RADIUS = 3.5f;
         private static final float PIT_DEPTH  = 8f;
+        private static final float PIT_RETRACTED_DURATION = 2.0f;
+        private static final float PIT_EXTENDING_DURATION = 0.35f;
+        private static final float PIT_EXTENDED_DURATION  = 1.5f;
+        private static final float PIT_RETRACTING_DURATION= 0.35f;
+        private static final float PIT_WARNING_TIME       = 0.4f;
+
+        private enum PitState { RETRACTED, EXTENDING, EXTENDED, RETRACTING }
+
+        private static class PitData {
+            Vector3f position;
+            float radius;
+            PitState state = PitState.RETRACTED;
+            float stateTimer = 0f;
+            final List<Geometry> spikes = new ArrayList<>();
+            Geometry decal;
+            boolean warningPlayed = false;
+        }
+
+        private final List<PitData> pits = new ArrayList<>();
 
         public GameState(String myNick, List<String> allPlayers, int myIndex, boolean solo,
                          boolean isHost, DatagramSocket socket, String hostAddress, int hostPort,
@@ -1635,11 +1654,15 @@ public class SnakeApp extends SimpleApplication {
         private void buildPits(PhysicsSpace space) {
             pitNode = new Node("Pits");
             rootNode.attachChild(pitNode);
+            pits.clear();
             Material pitFloor = unshaded(assetManager, new ColorRGBA(0.10f,0.08f,0.12f,1f));
             Material spikeMat = unshaded(assetManager, new ColorRGBA(0.75f,0.75f,0.82f,1f));
 
             for (float[] pp : PIT_POSITIONS) {
                 float px = pp[0], pz = pp[1];
+                PitData pit = new PitData();
+                pit.position = new Vector3f(px, 0f, pz);
+                pit.radius = PIT_RADIUS;
 
                 // Дно ямы
                 Box floor = new Box(PIT_RADIUS, 0.2f, PIT_RADIUS);
@@ -1663,13 +1686,17 @@ public class SnakeApp extends SimpleApplication {
                         float sz = pz - PIT_RADIUS*0.7f + sj*(PIT_RADIUS*1.4f/(spikeRows-1));
                         Geometry spike = new Geometry("Spike", new Box(0.08f, 0.5f, 0.08f));
                         spike.setMaterial(spikeMat);
-                        spike.setLocalTranslation(sx, -PIT_DEPTH + 0.5f, sz);
+                        spike.setLocalTranslation(sx, -PIT_DEPTH - 0.05f, sz);
+                        spike.setLocalScale(1f, 0.05f, 1f);
                         pitNode.attachChild(spike);
+                        pit.spikes.add(spike);
                         // Верхушка (острие)
                         Geometry tip = new Geometry("SpikeTip", new Sphere(4,4,0.15f));
                         tip.setMaterial(spikeMat);
-                        tip.setLocalTranslation(sx, -PIT_DEPTH + 1.1f, sz);
+                        tip.setLocalTranslation(sx, -PIT_DEPTH - 0.05f, sz);
+                        tip.setLocalScale(1f, 0.05f, 1f);
                         pitNode.attachChild(tip);
+                        pit.spikes.add(tip);
                     }
                 }
 
@@ -1678,6 +1705,8 @@ public class SnakeApp extends SimpleApplication {
                 holeDecal.setMaterial(unshaded(assetManager, new ColorRGBA(0.05f,0.04f,0.08f,1f)));
                 holeDecal.setLocalTranslation(px, -0.18f, pz);
                 pitNode.attachChild(holeDecal);
+                pit.decal = holeDecal;
+                pits.add(pit);
             }
         }
 
@@ -2479,8 +2508,11 @@ public class SnakeApp extends SimpleApplication {
 
             checkCollisions();
 
-            // Проверка ям (карта 2)
-            if (mapIndex==2 && (solo||isHost)) checkPits();
+            // Проверка/анимация ям (карта 2)
+            if (mapIndex==2 && (solo||isHost)) {
+                updatePits(tpf);
+                checkPits();
+            }
 
             // Сетевые отправки
             if (!solo) {
@@ -2511,18 +2543,72 @@ public class SnakeApp extends SimpleApplication {
             updateBlackCubes(tpf);
         }
 
-        /** Проверка ям — змейка падает в яму = смерть */
+        private void updatePits(float tpf) {
+            for (PitData pit : pits) {
+                pit.stateTimer += tpf;
+                float duration = switch (pit.state) {
+                    case RETRACTED -> PIT_RETRACTED_DURATION;
+                    case EXTENDING -> PIT_EXTENDING_DURATION;
+                    case EXTENDED -> PIT_EXTENDED_DURATION;
+                    case RETRACTING -> PIT_RETRACTING_DURATION;
+                };
+
+                if (pit.state == PitState.RETRACTED && !pit.warningPlayed && pit.stateTimer >= duration - PIT_WARNING_TIME) {
+                    pit.warningPlayed = true;
+                    if (pit.decal != null) pit.decal.getMaterial().setColor("Color", new ColorRGBA(0.55f, 0.18f, 0.18f, 1f));
+                    playSound(chitSound);
+                }
+
+                if (pit.stateTimer >= duration) {
+                    pit.stateTimer = 0f;
+                    pit.warningPlayed = false;
+                    pit.state = switch (pit.state) {
+                        case RETRACTED -> PitState.EXTENDING;
+                        case EXTENDING -> PitState.EXTENDED;
+                        case EXTENDED -> PitState.RETRACTING;
+                        case RETRACTING -> PitState.RETRACTED;
+                    };
+                }
+
+                float progress = switch (pit.state) {
+                    case RETRACTED -> 0f;
+                    case EXTENDING -> FastMath.clamp(pit.stateTimer / PIT_EXTENDING_DURATION, 0f, 1f);
+                    case EXTENDED -> 1f;
+                    case RETRACTING -> 1f - FastMath.clamp(pit.stateTimer / PIT_RETRACTING_DURATION, 0f, 1f);
+                };
+                if (pit.decal != null && pit.state != PitState.RETRACTED) {
+                    pit.decal.getMaterial().setColor("Color", progress > 0.8f
+                            ? new ColorRGBA(0.60f,0.15f,0.15f,1f)
+                            : new ColorRGBA(0.25f,0.10f,0.12f,1f));
+                } else if (pit.decal != null) {
+                    pit.decal.getMaterial().setColor("Color", new ColorRGBA(0.05f,0.04f,0.08f,1f));
+                }
+
+                for (Geometry spike : pit.spikes) {
+                    Vector3f pos = spike.getLocalTranslation();
+                    spike.setLocalTranslation(pos.x, -PIT_DEPTH - 0.05f + progress * 1.15f, pos.z);
+                    spike.setLocalScale(1f, 0.05f + progress * 0.95f, 1f);
+                }
+            }
+        }
+
+        /** Проверка ям-шипов */
         private void checkPits() {
             for (int si=0;si<snakes.size();si++) {
                 SnakePlayer s = snakes.get(si);
                 if (s.isDead()) continue;
                 Vector3f head = s.getHeadPos();
-                for (float[] pp : PIT_POSITIONS) {
-                    float dx = head.x - pp[0], dz = head.z - pp[1];
-                    if (Math.sqrt(dx*dx+dz*dz) < PIT_RADIUS * 0.75f) {
-                        killSnake(si, "упал в яму со шипами!");
+                for (PitData pit : pits) {
+                    float dx = head.x - pit.position.x, dz = head.z - pit.position.z;
+                    boolean inside = (dx*dx+dz*dz) < (pit.radius * 0.75f) * (pit.radius * 0.75f);
+                    boolean dangerous = pit.state == PitState.EXTENDED || pit.state == PitState.EXTENDING;
+                    if (!inside || !dangerous) continue;
+
+                    if (head.y <= 0.9f) {
+                        killSnake(si, "напоролся на шипы!");
                         break;
                     }
+                    s.removeSegmentsAtWorldPos(new Vector3f(pit.position.x, head.y, pit.position.z), pit.radius * 0.70f);
                 }
             }
         }
@@ -2831,6 +2917,21 @@ public class SnakeApp extends SimpleApplication {
             com.jme3.bullet.control.RigidBodyControl phy=seg.getControl(com.jme3.bullet.control.RigidBodyControl.class);
             if (phy!=null&&physicsSpace!=null) { phy.setEnabled(false); physicsSpace.remove(phy); }
             parentNode.detachChild(seg); segments.remove(idx); segPos.remove(idx);
+        }
+
+
+        public void removeSegmentsAtWorldPos(Vector3f worldPos, float radius) {
+            if (dead || segments.size() <= 2) return;
+            for (int i = segments.size() - 1; i >= 1; i--) {
+                if (segPos.get(i).distance(worldPos) < radius) {
+                    Geometry seg = segments.get(i);
+                    com.jme3.bullet.control.RigidBodyControl phy = seg.getControl(com.jme3.bullet.control.RigidBodyControl.class);
+                    if (phy != null && physicsSpace != null) { phy.setEnabled(false); physicsSpace.remove(phy); }
+                    parentNode.detachChild(seg);
+                    segments.remove(i);
+                    segPos.remove(i);
+                }
+            }
         }
 
         public boolean selfCollides(float minDist) {
