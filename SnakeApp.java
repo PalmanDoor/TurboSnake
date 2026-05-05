@@ -236,7 +236,7 @@ public class SnakeApp extends SimpleApplication {
         private final BitmapText label;
         private final float x, y, w, h;
         private boolean hovered = false, pressed = false;
-        private final ColorRGBA accentColor;
+        private ColorRGBA accentColor;
         private final ColorRGBA bgNormal, bgHover, bgPressed;
 
         MenuButton(String text, float cx, float cy, float w, float h,
@@ -311,6 +311,7 @@ public class SnakeApp extends SimpleApplication {
         }
 
         void setText(String t) { label.setText(t); }
+        void setAccentColor(ColorRGBA c) { accentColor = c; label.setColor(c); refreshColor(); }
     }
 
     // ---------- ползунок громкости ----------
@@ -1223,10 +1224,7 @@ public class SnakeApp extends SimpleApplication {
                 if (cubesToggleBtn != null && cubesToggleBtn.isHit(mp.x, mp.y)) {
                     cubesEnabled = !cubesEnabled;
                     cubesToggleBtn.setText("⬛ КУБЫ: " + (cubesEnabled ? "ВКЛ" : "ВЫКЛ"));
-                    cubesToggleBtn = new MenuButton("⬛ КУБЫ: " + (cubesEnabled ? "ВКЛ" : "ВЫКЛ"),
-                            40f + 140f, cam.getHeight() - 560f, 280f, 44f,
-                            BTN_NORMAL, BTN_HOVER, BTN_PRESS, cubesEnabled ? ACCENT : TEXT_DIM,
-                            assetManager, guiNode, 0f);
+                    cubesToggleBtn.setAccentColor(cubesEnabled ? ACCENT : TEXT_DIM);
                 }
                 // Fix #11: выбор цвета змейки в лобби через HSV-пикер
                 float swX0 = cam.getWidth() - 390f, swY0 = cam.getHeight() - 110f;
@@ -3042,24 +3040,11 @@ public class SnakeApp extends SimpleApplication {
         private void startFrozenArenaEvent() {
             if (frozenArenaActive) return;
             frozenArenaActive = true; frozenArenaTimer = FROZEN_ARENA_DURATION;
-            frozenSpeedMult = 0.40f; // замедление — лёд!
+            frozenSpeedMult = 1.0f; // скорость не снижаем: на льду только скольжение
             showCenter("❄️ ЛЕДЯНАЯ АРЕНА! Осторожно — лёд! ❄️", new ColorRGBA(0.6f,0.9f,1f,1f));
             if (!solo) sendNet("EVENT_FROZEN");
-            // Покрасить пол в ледяной цвет (визуальный эффект)
-            if (wallNode != null) {
-                wallNode.depthFirstTraversal(spatial -> {
-                    if (spatial instanceof Geometry g && "Box".equals(g.getMesh().getClass().getSimpleName())) {
-                        Material m = g.getMaterial();
-                        if (m != null) {
-                            Object col = m.getParamValue("Color");
-                            if (col instanceof ColorRGBA c && c.g > 0.45f && c.b < 0.6f) {
-                                // Зелёный пол → ледяной голубой
-                                m.setColor("Color", new ColorRGBA(0.65f, 0.85f, 1.00f, 1f));
-                            }
-                        }
-                    }
-                });
-            }
+                        // Легкий голубой тинт только для пола (стены не трогаем)
+            applyFrozenFloorTint(true);
         }
 
         private void updateFrozenArena(float tpf) {
@@ -3068,9 +3053,40 @@ public class SnakeApp extends SimpleApplication {
             if (frozenArenaTimer <= 0f) {
                 frozenArenaActive = false;
                 frozenSpeedMult = 1f;
-                showCenter("❄️ Лёд растаял. Скорость восстановлена.", new ColorRGBA(0.6f,0.9f,1f,1f));
+                showCenter("❄️ Лёд растаял. Скольжение исчезло.", new ColorRGBA(0.6f,0.9f,1f,1f));
+                applyFrozenFloorTint(false);
                 if (solo || isHost) nextEventTimer = 25f + eventRng.nextFloat() * 45f;
             }
+        }
+
+
+        private void applyFrozenFloorTint(boolean enable) {
+            if (wallNode == null) return;
+            wallNode.depthFirstTraversal(spatial -> {
+                if (!(spatial instanceof Geometry g)) return;
+                if (!"Box".equals(g.getMesh().getClass().getSimpleName())) return;
+                Vector3f pos = g.getLocalTranslation();
+                if (Math.abs(pos.y + 0.4f) > 0.15f && Math.abs(pos.y + 0.19f) > 0.08f) return;
+                Material m = g.getMaterial();
+                if (m == null) return;
+                Object colObj = m.getParamValue("Color");
+                if (!(colObj instanceof ColorRGBA base)) return;
+                if (enable) {
+                    if (g.getUserData("FrozenBaseR") == null) {
+                        g.setUserData("FrozenBaseR", base.r);
+                        g.setUserData("FrozenBaseG", base.g);
+                        g.setUserData("FrozenBaseB", base.b);
+                        ColorRGBA tinted = base.interpolateLocal(new ColorRGBA(0.72f,0.88f,1f,1f), 0.35f);
+                        tinted.a = 1f;
+                        m.setColor("Color", tinted);
+                    }
+                } else {
+                    Float r = g.getUserData("FrozenBaseR");
+                    Float gg = g.getUserData("FrozenBaseG");
+                    Float b = g.getUserData("FrozenBaseB");
+                    if (r != null && gg != null && b != null) m.setColor("Color", new ColorRGBA(r, gg, b, 1f));
+                }
+            });
         }
 
         // ── Кубы-враги ────────────────────────────────────────────────────
@@ -3146,16 +3162,19 @@ public class SnakeApp extends SimpleApplication {
                     // Найти ближайшую живую змейку
                     SnakePlayer nearest = null;
                     float minDist = Float.MAX_VALUE;
+                    Vector3f nearestTarget = null;
                     for (SnakePlayer s : snakes) {
                         if (s.isDead()) continue;
-                        float d = cubePos.distance(s.getHeadPos());
-                        if (d<minDist) { minDist=d; nearest=s; }
+                        for (Vector3f seg : s.getSegmentPositions()) {
+                            float d = cubePos.distance(seg);
+                            if (d < minDist) { minDist = d; nearest = s; nearestTarget = seg; }
+                        }
                     }
 
                     if (nearest != null && minDist < CHASE_RANGE) {
                         // Преследуем только если игрок достаточно близко
                         bc.chasing = true;
-                        Vector3f toSnake = nearest.getHeadPos().subtract(cubePos).setY(0);
+                        Vector3f toSnake = (nearestTarget != null ? nearestTarget : nearest.getHeadPos()).subtract(cubePos).setY(0);
                         if (toSnake.lengthSquared() > 0.001f) toSnake.normalizeLocal();
 
                         // Сила зависит от числа укусов (куб тяжелеет): bc.biteCount замедляет
@@ -3253,7 +3272,8 @@ public class SnakeApp extends SimpleApplication {
             } else {
                 if (snakeIdx==myIndex) showCenter("Куб атаковал!", new ColorRGBA(1f,0.2f,0.2f,1f));
             }
-            // Куб растёт от укуса — Fix #4: пересоздаём физическое тело с правильным размером
+            // Куб растёт только если действительно откусил массу
+            if (shrinkAmt <= 0) { playSound(chitSound); return; }
             for (BlackCube bc : blackCubes) {
                 if (bc.id == cubeId) {
                     bc.biteCount++;
