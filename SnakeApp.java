@@ -44,6 +44,55 @@ public class SnakeApp extends SimpleApplication {
     static float effectVolume = 1.0f;
     static float musicVolume  = 0.5f;
     static int selectedMap = 0;
+    static ColorRGBA selectedSnakeColor = new ColorRGBA(0.15f, 0.9f, 0.3f, 1f);
+    static String savedNickname = getSystemUsername();
+    // Fix #5: Настройки графики
+    static boolean graphicsShadows     = true;
+    static boolean graphicsReflections = false; // тяжёлое — отключено по умолчанию
+
+    // =========================================================================
+    // НАСТРОЙКИ (сохранение/загрузка в %appdata%/SSnake3D/)
+    // =========================================================================
+    static java.io.File getSettingsFile() {
+        String appdata = System.getenv("APPDATA");
+        if (appdata == null || appdata.isBlank()) appdata = System.getProperty("user.home");
+        java.io.File dir = new java.io.File(appdata, "SSnake3D");
+        if (!dir.exists()) dir.mkdirs();
+        return new java.io.File(dir, "settings.properties");
+    }
+
+    static void loadSettings() {
+        java.io.File f = getSettingsFile();
+        if (!f.exists()) return;
+        try (java.io.FileInputStream in = new java.io.FileInputStream(f)) {
+            java.util.Properties p = new java.util.Properties();
+            p.load(in);
+            effectVolume       = Float.parseFloat(p.getProperty("effectVolume", "1.0"));
+            musicVolume        = Float.parseFloat(p.getProperty("musicVolume",  "0.5"));
+            savedNickname      = p.getProperty("nickname", getSystemUsername());
+            float r = Float.parseFloat(p.getProperty("snakeColorR", "0.15"));
+            float g = Float.parseFloat(p.getProperty("snakeColorG", "0.9"));
+            float b = Float.parseFloat(p.getProperty("snakeColorB", "0.3"));
+            selectedSnakeColor = new ColorRGBA(r, g, b, 1f);
+            graphicsShadows     = Boolean.parseBoolean(p.getProperty("shadows",     "true")); // Fix #5
+            graphicsReflections = Boolean.parseBoolean(p.getProperty("reflections", "false"));
+        } catch (Exception e) { System.out.println("[Settings] Load error: " + e.getMessage()); }
+    }
+
+    static void saveSettings(String nickname) {
+        try (java.io.FileOutputStream out = new java.io.FileOutputStream(getSettingsFile())) {
+            java.util.Properties p = new java.util.Properties();
+            p.setProperty("effectVolume",  String.valueOf(effectVolume));
+            p.setProperty("musicVolume",   String.valueOf(musicVolume));
+            p.setProperty("nickname",      nickname != null ? nickname : savedNickname);
+            p.setProperty("snakeColorR",   String.valueOf(selectedSnakeColor.r));
+            p.setProperty("snakeColorG",   String.valueOf(selectedSnakeColor.g));
+            p.setProperty("snakeColorB",   String.valueOf(selectedSnakeColor.b));
+            p.setProperty("shadows",       String.valueOf(graphicsShadows));     // Fix #5
+            p.setProperty("reflections",   String.valueOf(graphicsReflections)); // Fix #5
+            p.store(out, "SSnake3D Settings");
+        } catch (Exception e) { System.out.println("[Settings] Save error: " + e.getMessage()); }
+    }
 
     public static final ColorRGBA ACCENT      = new ColorRGBA(0.12f, 0.94f, 0.48f, 1f);
     public static final ColorRGBA ACCENT_DIM  = new ColorRGBA(0.04f, 0.48f, 0.24f, 1f);
@@ -59,6 +108,46 @@ public class SnakeApp extends SimpleApplication {
     public static final ColorRGBA BTN_HOVER   = new ColorRGBA(0.102f, 0.20f, 0.50f, 0.97f);
     public static final ColorRGBA BTN_PRESS   = new ColorRGBA(0.035f, 0.055f, 0.122f, 1f);
 
+    // Fix #7: Глобальный менеджер фоновой музыки — один трек на всё время игры
+    static class MusicManager {
+        private static AudioNode currentBgMusic = null;
+        private static String currentTrack = "";
+
+        static void play(AssetManager am, Node root, String track, float volume) {
+            // Если уже играет этот трек — просто обновляем громкость
+            if (track.equals(currentTrack) && currentBgMusic != null
+                    && currentBgMusic.getStatus() == AudioSource.Status.Playing) {
+                currentBgMusic.setVolume(volume);
+                return;
+            }
+            stop(root);
+            try {
+                currentBgMusic = new AudioNode(am, track, DataType.Stream);
+                currentBgMusic.setPositional(false);
+                currentBgMusic.setLooping(true);
+                currentBgMusic.setVolume(volume);
+                root.attachChild(currentBgMusic);
+                currentBgMusic.play();
+                currentTrack = track;
+            } catch (Exception e) {
+                System.out.println("[Music] " + track + " not found");
+            }
+        }
+
+        static void setVolume(float v) {
+            if (currentBgMusic != null) currentBgMusic.setVolume(v);
+        }
+
+        static void stop(Node root) {
+            if (currentBgMusic != null) {
+                currentBgMusic.stop();
+                try { root.detachChild(currentBgMusic); } catch (Exception ignore) {}
+                currentBgMusic = null;
+                currentTrack = "";
+            }
+        }
+    }
+
     public static void main(String[] args) {
         SnakeApp app = new SnakeApp();
         AppSettings s = new AppSettings(true);
@@ -72,6 +161,7 @@ public class SnakeApp extends SimpleApplication {
 
     @Override
     public void simpleInitApp() {
+        loadSettings();
         if (inputManager.hasMapping(SimpleApplication.INPUT_MAPPING_EXIT)) {
             inputManager.deleteMapping(SimpleApplication.INPUT_MAPPING_EXIT);
         }
@@ -104,6 +194,18 @@ public class SnakeApp extends SimpleApplication {
             }
         } catch (Exception ignored) {}
         return "Player" + (100 + new Random().nextInt(900));
+    }
+
+    // Fix #6: HSV→RGB компоненты для цветового пикера
+    static float hsvR(float h, float s, float v) { return hsvComponent(h, s, v, 5f); }
+    static float hsvG(float h, float s, float v) { return hsvComponent(h, s, v, 3f); }
+    static float hsvB(float h, float s, float v) { return hsvComponent(h, s, v, 1f); }
+    static float hsvComponent(float h, float s, float v, float n) {
+        float k = (n + h * 6f) % 6f;
+        return v - v * s * Math.max(0f, Math.min(Math.min(k, 4f - k), 1f));
+    }
+    static ColorRGBA hsvToRGBA(float h, float s, float v) {
+        return new ColorRGBA(hsvR(h,s,v), hsvG(h,s,v), hsvB(h,s,v), 1f);
     }
 
     static Mesh createSlantedQuad(float w, float h, float tilt) {
@@ -279,7 +381,7 @@ public class SnakeApp extends SimpleApplication {
 
         private BitmapText titleText, subtitleText, infoText;
         private BitmapText nicknameText, cursorBlink;
-        private StringBuilder nickname = new StringBuilder(getSystemUsername());
+        private StringBuilder nickname = new StringBuilder(savedNickname.isEmpty() ? getSystemUsername() : savedNickname);
         private float blinkTimer = 0f;
         private boolean cursorVisible = true;
 
@@ -459,6 +561,64 @@ public class SnakeApp extends SimpleApplication {
             settingsClose = new MenuButton("ЗАКРЫТЬ", cx, cy-138f, 180, 44,
                     BTN_NORMAL, BTN_HOVER, BTN_PRESS, DANGER, assetManager, settingsPanel, Z);
 
+            // ── Цвет змейки (Fix #6: HSV-градиентный пикер) ────────────────
+            BitmapText colorLabel = new BitmapText(font);
+            colorLabel.setSize(14); colorLabel.setText("ЦВЕТ ЗМЕЙКИ");
+            colorLabel.setColor(TEXT_DIM);
+            // Fix #6: опустить метку ниже чтобы не перекрывалась с предыдущими элементами
+            colorLabel.setLocalTranslation(cx-155, cy-100f, Z);
+            settingsPanel.attachChild(colorLabel);
+
+            // Образец выбранного цвета
+            Box colorPreviewBox = new Box(18f, 12f, 0.5f);
+            Geometry colorPreview = new Geometry("ColorPreview", colorPreviewBox);
+            colorPreview.setMaterial(unshaded(assetManager, selectedSnakeColor));
+            colorPreview.setLocalTranslation(cx + 130f, cy - 118f, Z);
+            settingsPanel.attachChild(colorPreview);
+
+            // Fix #6: HSV-пикер через 16 ячеек радуги + 4 яркости (4x4 = 16 свотчей)
+            float swX0 = cx - 150f, swY0 = cy - 123f, swW = 18f, swH = 10f, swGap = 2f;
+            float[] hues = {0f, 30f, 60f, 90f, 120f, 150f, 180f, 210f, 240f, 270f, 300f, 330f};
+            for (int ci = 0; ci < hues.length; ci++) {
+                float hue = hues[ci] / 360f;
+                float r2 = hsvR(hue, 0.85f, 0.9f);
+                float g2 = hsvG(hue, 0.85f, 0.9f);
+                float b2 = hsvB(hue, 0.85f, 0.9f);
+                Box swatchBox = new Box(swW/2f, swH/2f, 0.5f);
+                Geometry swatch = new Geometry("SwatchH"+ci, swatchBox);
+                swatch.setMaterial(unshaded(assetManager, new ColorRGBA(r2, g2, b2, 1f)));
+                swatch.setLocalTranslation(swX0 + ci * (swW + swGap), swY0, Z);
+                settingsPanel.attachChild(swatch);
+            }
+            // Ряд пастельных / тёмных
+            float[] hues2 = {0f, 60f, 120f, 180f, 240f, 300f, 30f, 90f, 150f, 210f, 270f, 330f};
+            for (int ci = 0; ci < hues2.length; ci++) {
+                float hue = hues2[ci] / 360f;
+                float r2 = hsvR(hue, 0.5f, 1.0f);
+                float g2 = hsvG(hue, 0.5f, 1.0f);
+                float b2 = hsvB(hue, 0.5f, 1.0f);
+                Box swatchBox = new Box(swW/2f, swH/2f, 0.5f);
+                Geometry swatch = new Geometry("SwatchP"+ci, swatchBox);
+                swatch.setMaterial(unshaded(assetManager, new ColorRGBA(r2, g2, b2, 1f)));
+                swatch.setLocalTranslation(swX0 + ci * (swW + swGap), swY0 - swH - swGap, Z);
+                settingsPanel.attachChild(swatch);
+            }
+
+            // Fix #5: Кнопки настроек графики
+            BitmapText gfxLabel = new BitmapText(font);
+            gfxLabel.setSize(13); gfxLabel.setText("ГРАФИКА:");
+            gfxLabel.setColor(TEXT_DIM);
+            gfxLabel.setLocalTranslation(cx-155, cy-152f, Z);
+            settingsPanel.attachChild(gfxLabel);
+
+            // Тени — «кнопка-тумблер»
+            BitmapText shadowsBtn = new BitmapText(font);
+            shadowsBtn.setSize(13); shadowsBtn.setName("ShadowsBtn");
+            shadowsBtn.setText("Тени: " + (graphicsShadows ? "ВКЛ" : "ВЫКЛ"));
+            shadowsBtn.setColor(graphicsShadows ? ACCENT : TEXT_DIM);
+            shadowsBtn.setLocalTranslation(cx-155, cy-170f, Z);
+            settingsPanel.attachChild(shadowsBtn);
+
             updateSettingsLabels();
             refreshNick();
             settingsPanel.setCullHint(Spatial.CullHint.Always);
@@ -470,16 +630,12 @@ public class SnakeApp extends SimpleApplication {
             if (musicVal != null) musicVal.setText(Math.round(musicVolume * 100) + "%");
             if (sfxSlider   != null) sfxSlider.setValue(effectVolume);
             if (musicSlider != null) musicSlider.setValue(musicVolume);
-            if (menuMusic   != null) menuMusic.setVolume(musicVolume);
+            MusicManager.setVolume(musicVolume); // Fix #7
         }
 
         private void startMenuMusic() {
-            try {
-                menuMusic = new AudioNode(assetManager, "Sounds/theme/main1.ogg", DataType.Buffer);
-                menuMusic.setPositional(false); menuMusic.setLooping(true);
-                menuMusic.setVolume(musicVolume); rootNode.attachChild(menuMusic);
-                menuMusic.play();
-            } catch (Exception e) {}
+            // Fix #7: использовать глобальный MusicManager — не пересоздавать звук при возврате в меню
+            MusicManager.play(assetManager, rootNode, "Sounds/theme/main1.ogg", musicVolume);
         }
 
         private void refreshNick() {
@@ -546,10 +702,48 @@ public class SnakeApp extends SimpleApplication {
                     else {
                         if (settingsClose.onRelease(mx, my)) {
                             settingsOpen = false; settingsPanel.setCullHint(Spatial.CullHint.Always);
+                            saveSettings(nickname.toString());
                         } else if (sfxSlider.onClick(mx, my)) {
                             effectVolume = sfxSlider.getValue(); updateSettingsLabels();
                         } else if (musicSlider.onClick(mx, my)) {
                             musicVolume = musicSlider.getValue(); updateSettingsLabels();
+                        } else {
+                            // Fix #6: Проверка кликов по HSV-свотчам
+                            float W2 = cam.getWidth(), H2 = cam.getHeight(), cx2 = W2/2f, cy2 = H2/2f;
+                            float swX0 = cx2 - 150f, swY0 = cy2 - 123f, swW = 18f, swH = 10f, swGap = 2f;
+                            float[] huesA = {0f,30f,60f,90f,120f,150f,180f,210f,240f,270f,300f,330f};
+                            float[] huesB = {0f,60f,120f,180f,240f,300f,30f,90f,150f,210f,270f,330f};
+                            boolean swatchHit = false;
+                            for (int ci = 0; ci < huesA.length; ci++) {
+                                float sx = swX0 + ci*(swW+swGap);
+                                if (mx>=sx-swW/2 && mx<=sx+swW/2 && my>=swY0-swH/2 && my<=swY0+swH/2) {
+                                    selectedSnakeColor = hsvToRGBA(huesA[ci]/360f, 0.85f, 0.9f);
+                                    swatchHit = true;
+                                }
+                                float sy2 = swY0 - swH - swGap;
+                                if (mx>=sx-swW/2 && mx<=sx+swW/2 && my>=sy2-swH/2 && my<=sy2+swH/2) {
+                                    selectedSnakeColor = hsvToRGBA(huesB[ci]/360f, 0.5f, 1.0f);
+                                    swatchHit = true;
+                                }
+                            }
+                            if (swatchHit) {
+                                Spatial preview = settingsPanel.getChild("ColorPreview");
+                                if (preview instanceof Geometry)
+                                    ((Geometry)preview).getMaterial().setColor("Color", selectedSnakeColor);
+                                saveSettings(nickname.toString());
+                            }
+                            // Fix #5: Клик по тумблеру теней
+                            Spatial shadowBtn = settingsPanel.getChild("ShadowsBtn");
+                            if (shadowBtn instanceof BitmapText) {
+                                float bx = shadowBtn.getLocalTranslation().x;
+                                float by = shadowBtn.getLocalTranslation().y;
+                                if (mx>=bx && mx<=bx+140f && my>=by-20f && my<=by+5f) {
+                                    graphicsShadows = !graphicsShadows;
+                                    ((BitmapText)shadowBtn).setText("Тени: " + (graphicsShadows ? "ВКЛ" : "ВЫКЛ"));
+                                    ((BitmapText)shadowBtn).setColor(graphicsShadows ? ACCENT : TEXT_DIM);
+                                    saveSettings(nickname.toString());
+                                }
+                            }
                         }
                     }
                     return;
@@ -571,7 +765,10 @@ public class SnakeApp extends SimpleApplication {
 
         private void launch(boolean host, boolean solo) {
             String nick = nickname.length()==0 ? "Player" : nickname.toString();
-            if (menuMusic != null) { menuMusic.stop(); rootNode.detachChild(menuMusic); }
+            savedNickname = nick;
+            saveSettings(nick);
+            // Fix #7: НЕ останавливаем музыку — MusicManager обеспечивает непрерывное воспроизведение
+            MusicManager.setVolume(musicVolume);
             app.getInputManager().setCursorVisible(false);
             rootNode.detachChild(decorNode);
             guiNode.detachAllChildren();
@@ -580,7 +777,6 @@ public class SnakeApp extends SimpleApplication {
             if (solo) {
                 app.getStateManager().attach(new LobbyState(nick, false, true, null, 0));
             } else {
-                // Переход на экран списка серверов
                 app.getStateManager().attach(new ServerListState(nick));
             }
         }
@@ -639,38 +835,38 @@ public class SnakeApp extends SimpleApplication {
             startScan();
         }
 
-				private void buildUI() {
-						BitmapFont font = loadFont(assetManager);
-						float W = cam.getWidth(), H = cam.getHeight();
+        private void buildUI() {
+            BitmapFont font = loadFont(assetManager);
+            float W = cam.getWidth(), H = cam.getHeight();
 
-						titleText = new BitmapText(font);
-						titleText.setSize(42); titleText.setText("ДОСТУПНЫЕ ЛОББИ");
-						titleText.setColor(ACCENT);
-						titleText.setLocalTranslation(W/2f - titleText.getLineWidth()/2, H - 40, 0);
-						guiNode.attachChild(titleText);
+            titleText = new BitmapText(font);
+            titleText.setSize(42); titleText.setText("ДОСТУПНЫЕ ЛОББИ");
+            titleText.setColor(ACCENT);
+            titleText.setLocalTranslation(W/2f - titleText.getLineWidth()/2, H - 40, 0);
+            guiNode.attachChild(titleText);
 
-						statusText = new BitmapText(font);
-						statusText.setSize(20); statusText.setColor(TEXT_DIM);
-						statusText.setLocalTranslation(40, H - 100, 0);
-						guiNode.attachChild(statusText);
+            statusText = new BitmapText(font);
+            statusText.setSize(20); statusText.setColor(TEXT_DIM);
+            statusText.setLocalTranslation(40, H - 100, 0);
+            guiNode.attachChild(statusText);
 
-						float btnW = 280f, btnH = 45f;
-						float commonY = 40f; // Выносим общую высоту в переменную для удобства
+            float btnW = 280f, btnH = 45f;
+            float commonY = 40f; // Выносим общую высоту в переменную для удобства
 
-						// Кнопка «Создать лобби» — теперь внизу (commonY)
-						createBtn = new MenuButton("Создать лобби", 40f + btnW/2f, commonY, btnW, btnH,
-										BTN_NORMAL, BTN_HOVER, BTN_PRESS, ACCENT3, assetManager, guiNode, 0f);
+            // Кнопка «Создать лобби» — теперь внизу (commonY)
+            createBtn = new MenuButton("Создать лобби", 40f + btnW/2f, commonY, btnW, btnH,
+                    BTN_NORMAL, BTN_HOVER, BTN_PRESS, ACCENT3, assetManager, guiNode, 0f);
 
-						// Кнопка «Обновить список» — на той же высоте
-						refreshBtn = new MenuButton("Обновить", 40f + btnW + 20f + btnW/2f, commonY, btnW, btnH,
-										BTN_NORMAL, BTN_HOVER, BTN_PRESS, ACCENT2, assetManager, guiNode, 0f);
+            // Кнопка «Обновить список» — на той же высоте
+            refreshBtn = new MenuButton("Обновить", 40f + btnW + 20f + btnW/2f, commonY, btnW, btnH,
+                    BTN_NORMAL, BTN_HOVER, BTN_PRESS, ACCENT2, assetManager, guiNode, 0f);
 
-						// Кнопка «Назад»
-						backBtn = new MenuButton("Назад", W - 40f - 140f/2f, commonY, 140f, btnH,
-										BTN_NORMAL, BTN_HOVER, BTN_PRESS, DANGER, assetManager, guiNode, 0f);
+            // Кнопка «Назад»
+            backBtn = new MenuButton("Назад", W - 40f - 140f/2f, commonY, 140f, btnH,
+                    BTN_NORMAL, BTN_HOVER, BTN_PRESS, DANGER, assetManager, guiNode, 0f);
 
-						setupInput();
-				}
+            setupInput();
+        }
 
         private void updateServerListGUI() {
             for (MenuButton b : serverButtons) b.detach(guiNode);
@@ -686,62 +882,62 @@ public class SnakeApp extends SimpleApplication {
             statusText.setText("Найдено лобби: " + serverAddresses.size());
         }
 
-				private void startScan() {
-						if (scanning) return;
-						scanning = true;
-						serverAddresses.clear();
-						updateServerListGUI();
-						statusText.setText("Сканирование сети...");
-						scanTimer = 3.0f;
+        private void startScan() {
+            if (scanning) return;
+            scanning = true;
+            serverAddresses.clear();
+            updateServerListGUI();
+            statusText.setText("Сканирование сети...");
+            scanTimer = 3.0f;
 
-						new Thread(() -> {
-								try {
-										discoverSocket = new DatagramSocket();
-										discoverSocket.setSoTimeout(200);
-										byte[] db = "DISCOVER".getBytes(StandardCharsets.UTF_8);
-										InetAddress ba = InetAddress.getByName("255.255.255.255");
-										discoverSocket.send(new DatagramPacket(db, db.length, ba, BROADCAST_PORT));
-										
-										byte[] buf = new byte[256];
-										while (scanning) {
-												try {
-														DatagramPacket rp = new DatagramPacket(buf, buf.length);
-														discoverSocket.receive(rp);
-														
-														String resp = new String(rp.getData(), 0, rp.getLength(), StandardCharsets.UTF_8);
-														if (resp.startsWith("HOST_HERE|")) {
-																String ip = rp.getAddress().getHostAddress() + ":" + resp.split("\\|")[1];
-																synchronized (serverAddresses) {
-																		if (!serverAddresses.contains(ip)) serverAddresses.add(ip);
-																}
-																app.enqueue(this::updateServerListGUI);
-														}
-												} catch (SocketTimeoutException ignore) {
-														// Это нормально, просто никто не ответил за 200мс
-												} catch (SocketException e) {
-														// Если сокет закрыт намеренно, выходим из цикла без вывода ошибки
-														if (!scanning) break; 
-														e.printStackTrace();
-												}
-										}
-								} catch (Exception e) {
-										// Ошибки инициализации или отправки (например, нет сети)
-										if (scanning) e.printStackTrace();
-								} finally {
-										stopScanning();
-								}
-						}).start();
-				}
+            new Thread(() -> {
+                try {
+                    discoverSocket = new DatagramSocket();
+                    discoverSocket.setSoTimeout(200);
+                    byte[] db = "DISCOVER".getBytes(StandardCharsets.UTF_8);
+                    InetAddress ba = InetAddress.getByName("255.255.255.255");
+                    discoverSocket.send(new DatagramPacket(db, db.length, ba, BROADCAST_PORT));
+
+                    byte[] buf = new byte[256];
+                    while (scanning) {
+                        try {
+                            DatagramPacket rp = new DatagramPacket(buf, buf.length);
+                            discoverSocket.receive(rp);
+
+                            String resp = new String(rp.getData(), 0, rp.getLength(), StandardCharsets.UTF_8);
+                            if (resp.startsWith("HOST_HERE|")) {
+                                String ip = rp.getAddress().getHostAddress() + ":" + resp.split("\\|")[1];
+                                synchronized (serverAddresses) {
+                                    if (!serverAddresses.contains(ip)) serverAddresses.add(ip);
+                                }
+                                app.enqueue(this::updateServerListGUI);
+                            }
+                        } catch (SocketTimeoutException ignore) {
+                            // Это нормально, просто никто не ответил за 200мс
+                        } catch (SocketException e) {
+                            // Если сокет закрыт намеренно, выходим из цикла без вывода ошибки
+                            if (!scanning) break;
+                            e.printStackTrace();
+                        }
+                    }
+                } catch (Exception e) {
+                    // Ошибки инициализации или отправки (например, нет сети)
+                    if (scanning) e.printStackTrace();
+                } finally {
+                    stopScanning();
+                }
+            }).start();
+        }
 
         @Override
         public void update(float tpf) {
             if (scanning) {
                 scanTimer -= tpf;
-								if (scanTimer <= 0) {
-										scanning = false;
-										if (discoverSocket != null) discoverSocket.close();
-										statusText.setText("Сканирование завершено.");
-								}
+                if (scanTimer <= 0) {
+                    scanning = false;
+                    if (discoverSocket != null) discoverSocket.close();
+                    statusText.setText("Сканирование завершено.");
+                }
             }
         }
 
@@ -846,6 +1042,10 @@ public class SnakeApp extends SimpleApplication {
 
         private final List<InetSocketAddress> clients = new CopyOnWriteArrayList<>();
 
+        // Fix #13: флаг включения/отключения чёрных кубов
+        private boolean cubesEnabled = true;
+        private MenuButton cubesToggleBtn;
+
         private static final String[] MAP_NAMES = {"Зелёная арена", "Пустыня", "Ямы с шипами"};
         private static final ColorRGBA[] MAP_COLORS = { ACCENT, ACCENT3, DANGER };
 
@@ -920,6 +1120,43 @@ public class SnakeApp extends SimpleApplication {
             notificationText.setText("");
             notificationText.setLocalTranslation(W/2f, H/2f + 60f, 0);
             guiNode.attachChild(notificationText);
+
+            // Fix #13: Кнопка включения/отключения чёрных кубов
+            cubesToggleBtn = new MenuButton("⬛ КУБЫ: ВКЛ", leftX + 140f, H - 560f, 280f, 44f,
+                    BTN_NORMAL, BTN_HOVER, BTN_PRESS, ACCENT, assetManager, guiNode, 0f);
+
+            // Fix #11: HSV-пикер цвета змейки в лобби (совпадает с настройками)
+            BitmapText colorTitle = new BitmapText(font);
+            colorTitle.setSize(16); colorTitle.setText("ЦВЕТ ВАШЕЙ ЗМЕЙКИ:");
+            colorTitle.setColor(TEXT_DIM);
+            colorTitle.setLocalTranslation(W - 400f, H - 80f, 0);
+            guiNode.attachChild(colorTitle);
+
+            float swX0 = W - 390f, swY0 = H - 110f, swW = 22f, swH = 13f, swGap = 2f;
+            float[] huesA = {0f,30f,60f,90f,120f,150f,180f,210f,240f,270f,300f,330f};
+            for (int ci = 0; ci < huesA.length; ci++) {
+                ColorRGBA sc = hsvToRGBA(huesA[ci]/360f, 0.85f, 0.9f);
+                Box swatchBox = new Box(swW/2f, swH/2f, 0.5f);
+                Geometry swatch = new Geometry("LobSwH"+ci, swatchBox);
+                swatch.setMaterial(unshaded(assetManager, sc));
+                swatch.setLocalTranslation(swX0 + ci*(swW+swGap), swY0, 0);
+                guiNode.attachChild(swatch);
+            }
+            float[] huesB = {0f,60f,120f,180f,240f,300f,30f,90f,150f,210f,270f,330f};
+            for (int ci = 0; ci < huesB.length; ci++) {
+                ColorRGBA sc = hsvToRGBA(huesB[ci]/360f, 0.5f, 1.0f);
+                Box swatchBox = new Box(swW/2f, swH/2f, 0.5f);
+                Geometry swatch = new Geometry("LobSwP"+ci, swatchBox);
+                swatch.setMaterial(unshaded(assetManager, sc));
+                swatch.setLocalTranslation(swX0 + ci*(swW+swGap), swY0 - swH - swGap, 0);
+                guiNode.attachChild(swatch);
+            }
+            // Образец текущего цвета
+            Box previewBox = new Box(20f, 16f, 0.5f);
+            Geometry colorPreview = new Geometry("LobbyColorPreview", previewBox);
+            colorPreview.setMaterial(unshaded(assetManager, selectedSnakeColor));
+            colorPreview.setLocalTranslation(W - 40f, swY0 - swH/2f, 0);
+            guiNode.attachChild(colorPreview);
         }
 
         private void showNotification(String msg) {
@@ -981,6 +1218,38 @@ public class SnakeApp extends SimpleApplication {
                         if (isHost) broadcastMapSelection();
                         refreshUI();
                     }
+                }
+                // Fix #13: переключаем чёрные кубы
+                if (cubesToggleBtn != null && cubesToggleBtn.isHit(mp.x, mp.y)) {
+                    cubesEnabled = !cubesEnabled;
+                    cubesToggleBtn.setText("⬛ КУБЫ: " + (cubesEnabled ? "ВКЛ" : "ВЫКЛ"));
+                    cubesToggleBtn = new MenuButton("⬛ КУБЫ: " + (cubesEnabled ? "ВКЛ" : "ВЫКЛ"),
+                            40f + 140f, cam.getHeight() - 560f, 280f, 44f,
+                            BTN_NORMAL, BTN_HOVER, BTN_PRESS, cubesEnabled ? ACCENT : TEXT_DIM,
+                            assetManager, guiNode, 0f);
+                }
+                // Fix #11: выбор цвета змейки в лобби через HSV-пикер
+                float swX0 = cam.getWidth() - 390f, swY0 = cam.getHeight() - 110f;
+                float swW = 22f, swH = 13f, swGap = 2f;
+                float[] huesA = {0f,30f,60f,90f,120f,150f,180f,210f,240f,270f,300f,330f};
+                float[] huesB = {0f,60f,120f,180f,240f,300f,30f,90f,150f,210f,270f,330f};
+                boolean lobColorHit = false;
+                for (int ci = 0; ci < huesA.length; ci++) {
+                    float sx = swX0 + ci*(swW+swGap);
+                    if (mp.x>=sx-swW/2 && mp.x<=sx+swW/2 && mp.y>=swY0-swH/2 && mp.y<=swY0+swH/2) {
+                        selectedSnakeColor = hsvToRGBA(huesA[ci]/360f, 0.85f, 0.9f);
+                        lobColorHit = true;
+                    }
+                    float sy2 = swY0 - swH - swGap;
+                    if (mp.x>=sx-swW/2 && mp.x<=sx+swW/2 && mp.y>=sy2-swH/2 && mp.y<=sy2+swH/2) {
+                        selectedSnakeColor = hsvToRGBA(huesB[ci]/360f, 0.5f, 1.0f);
+                        lobColorHit = true;
+                    }
+                }
+                if (lobColorHit) {
+                    Spatial lp = guiNode.getChild("LobbyColorPreview");
+                    if (lp instanceof Geometry) ((Geometry)lp).getMaterial().setColor("Color", selectedSnakeColor);
+                    saveSettings(null);
                 }
             }, "LClick");
         }
@@ -1138,9 +1407,10 @@ public class SnakeApp extends SimpleApplication {
             DatagramSocket gameSocket = this.socket;
             this.socket = null;
             app.getStateManager().detach(this);
+            // Fix #14: через LoadingState — экран загрузки вместо чёрного экрана
             app.getStateManager().attach(
-                    new GameState(myNick, playerList, myIdx, isSolo || playerList.size()==1,
-                            isHost, gameSocket, hostAddress, hostPort, clients, selectedMap));
+                    new LoadingState(myNick, playerList, myIdx, isSolo || playerList.size()==1,
+                            isHost, gameSocket, hostAddress, hostPort, clients, selectedMap, cubesEnabled));
         }
 
         private void backToMenu() {
@@ -1148,7 +1418,7 @@ public class SnakeApp extends SimpleApplication {
             if (socket!=null) socket.close();
             guiNode.detachAllChildren();
             inputManager.clearMappings();
-            app.getInputManager().setCursorVisible(false);
+            app.getInputManager().setCursorVisible(true);  // Fix #1: was false — курсор пропадал
             app.getStateManager().detach(this);
             app.getStateManager().attach(new MainMenuState());
         }
@@ -1190,6 +1460,105 @@ public class SnakeApp extends SimpleApplication {
     }
 
     // =========================================================================
+    // ЭКРАН ЗАГРУЗКИ (Fix #14: анимация "Загрузка..." вместо чёрного экрана)
+    // =========================================================================
+    static class LoadingState extends AbstractAppState {
+        private SimpleApplication app;
+        private Node guiNode;
+        private AssetManager assetManager;
+        private InputManager inputManager;
+        private Camera cam;
+
+        private final String myNick;
+        private final List<String> allPlayers;
+        private final int myIndex;
+        private final boolean solo, isHost;
+        private final DatagramSocket socket;
+        private final String hostAddress;
+        private final int hostPort;
+        private final List<InetSocketAddress> clients;
+        private final int mapIndex;
+        private final boolean cubesEnabled;
+
+        private BitmapText loadingLabel;
+        private float dotTimer = 0f;
+        private int dotCount = 0;
+        private float startDelay = 0.1f; // небольшой кадр для отрисовки
+
+        public LoadingState(String myNick, List<String> allPlayers, int myIndex, boolean solo,
+                            boolean isHost, DatagramSocket socket, String hostAddress, int hostPort,
+                            List<InetSocketAddress> clients, int mapIndex, boolean cubesEnabled) {
+            this.myNick=myNick; this.allPlayers=allPlayers; this.myIndex=myIndex;
+            this.solo=solo; this.isHost=isHost; this.socket=socket;
+            this.hostAddress=hostAddress; this.hostPort=hostPort;
+            this.clients=clients; this.mapIndex=mapIndex; this.cubesEnabled=cubesEnabled;
+        }
+
+        @Override
+        public void initialize(AppStateManager sm, Application application) {
+            super.initialize(sm, application);
+            app = (SimpleApplication) application;
+            guiNode = app.getGuiNode(); assetManager = app.getAssetManager();
+            inputManager = app.getInputManager(); cam = app.getCamera();
+            app.getViewPort().setBackgroundColor(BG);
+            app.getInputManager().setCursorVisible(false);
+            buildUI();
+        }
+
+        private void buildUI() {
+            BitmapFont font = loadFont(assetManager);
+            float W = cam.getWidth(), H = cam.getHeight();
+
+            // Затемнённый фон
+            Box bg = new Box(W/2f, H/2f, 0.1f);
+            Geometry bgGeo = new Geometry("LoadBg", bg);
+            Material bgMat = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
+            bgMat.setColor("Color", BG); bgGeo.setMaterial(bgMat);
+            bgGeo.setLocalTranslation(W/2f, H/2f, 0); guiNode.attachChild(bgGeo);
+
+            // Вращающийся индикатор (анимированный пульс через масштаб)
+            Geometry spinner = new Geometry("Spinner", new com.jme3.scene.shape.Sphere(8,8,18f));
+            Material spMat = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
+            spMat.setColor("Color", ACCENT); spinner.setMaterial(spMat);
+            spinner.setName("Spinner");
+            spinner.setLocalTranslation(W/2f, H/2f + 50f, 0.5f);
+            guiNode.attachChild(spinner);
+
+            // Надпись «Загрузка...»
+            loadingLabel = new BitmapText(font);
+            loadingLabel.setSize(32); loadingLabel.setColor(ACCENT3);
+            loadingLabel.setText("Загрузка");
+            loadingLabel.setLocalTranslation(W/2f - loadingLabel.getLineWidth()/2f, H/2f - 30f, 1f);
+            guiNode.attachChild(loadingLabel);
+        }
+
+        @Override
+        public void update(float tpf) {
+            startDelay -= tpf;
+            dotTimer += tpf;
+
+            // Анимация точек
+            if (dotTimer > 0.4f) {
+                dotTimer = 0f; dotCount = (dotCount + 1) % 4;
+                String dots = ".".repeat(dotCount);
+                if (loadingLabel != null) loadingLabel.setText("Загрузка" + dots);
+            }
+
+            // Анимация вращения spinner через вращение узла
+            Spatial sp = guiNode.getChild("Spinner");
+            if (sp != null) sp.rotate(0, 0, tpf * 2.5f);
+
+            // После небольшой задержки запускаем игровое состояние
+            if (startDelay <= 0f) {
+                guiNode.detachAllChildren();
+                app.getStateManager().detach(this);
+                app.getStateManager().attach(new GameState(myNick, allPlayers, myIndex, solo,
+                        isHost, socket, hostAddress, hostPort, clients, mapIndex, cubesEnabled));
+            }
+        }
+    }
+
+    // =========================================================================
     // ИГРОВОЕ СОСТОЯНИЕ (без изменений в части чата, т.к. его там и не было)
     // =========================================================================
     static class GameState extends AbstractAppState {
@@ -1204,16 +1573,39 @@ public class SnakeApp extends SimpleApplication {
         private float exitTimer = 8f;
         private Node gameoverNode;
         private boolean gameoverUIActive = false;
+        private MenuButton goPlayAgainBtn, goMenuBtn;
+
+        // Пауза
+        private boolean pauseActive = false;
+        private Node pauseNode;
+        private MenuButton pauseResumeBtn, pauseMenuBtn;
+
+        // Рывок  (Fix #3: увеличена длительность с 0.18 до 0.55 — рывок теперь ощутимый)
+        private float dashCooldown = 0f;
+        private static final float DASH_COOLDOWN_MAX = 4f;
+        private static final float DASH_SPEED_MULT   = 5.0f;   // немного увеличен множитель
+        private static final float DASH_DURATION     = 0.55f;  // было 0.18f
+        private float dashTimer = 0f;
+        private BitmapText dashCooldownText;
+
+        // Читкод KOPRFDC
+        private static final int[] CHEAT_CODE = { KeyInput.KEY_K, KeyInput.KEY_O, KeyInput.KEY_P,
+                KeyInput.KEY_R, KeyInput.KEY_F, KeyInput.KEY_D, KeyInput.KEY_C };
+        private int cheatCodeIndex = 0;
+        private boolean bordersRemoved = false;
 
         private final String myNick;
         private final List<String> allPlayers;
         private final int myIndex;
         private final boolean solo;
         private final int mapIndex; // 0=Зелёная, 1=Пустыня, 2=Ямы
+        private final boolean cubesEnabled; // Fix #13
 
         private final List<SnakePlayer> snakes = new ArrayList<>();
         private Node foodNode, wallNode, cloudNode, worldNode, cubeNode;
         private Node pitNode; // ямы со шипами (карта 2)
+        // Fix #2: Список кактусов для физики разрушения (карта 1)
+        private final List<CactusData> cacti = new ArrayList<>();
 
         private final List<FoodItem> foodItems = new ArrayList<>();
 
@@ -1275,6 +1667,12 @@ public class SnakeApp extends SimpleApplication {
         private float weatherRainTimer = 0f;
         private static final float WEATHER_RAIN_DURATION = 30f;
 
+        // ── ИВЕНТ 3: Ледяная арена (Fix #12) ────────────────────────────
+        private boolean frozenArenaActive = false;
+        private float frozenArenaTimer    = 0f;
+        private static final float FROZEN_ARENA_DURATION = 20f;
+        private float frozenSpeedMult = 1f; // множитель скорости (0.35 = очень скользко)
+
         // ── Общий планировщик случайных ивентов (хост/соло) ──────────────
         private float nextEventTimer = 0f;  // время до следующего ивента
         private final Random eventRng = new Random();
@@ -1302,10 +1700,36 @@ public class SnakeApp extends SimpleApplication {
         };
         private static final float PIT_RADIUS = 3.5f;
         private static final float PIT_DEPTH  = 8f;
+        private static final float PIT_RETRACTED_DURATION = 2.0f;
+        private static final float PIT_EXTENDING_DURATION = 0.35f;
+        private static final float PIT_EXTENDED_DURATION  = 1.5f;
+        private static final float PIT_RETRACTING_DURATION= 0.35f;
+        private static final float PIT_WARNING_TIME       = 0.4f;
+
+        private enum PitState { RETRACTED, EXTENDING, EXTENDED, RETRACTING }
+
+        private static class PitData {
+            Vector3f position;
+            float radius;
+            PitState state = PitState.RETRACTED;
+            float stateTimer = 0f;
+            float warnFlashTimer = 0f;
+            final List<Geometry> spikes    = new ArrayList<>();
+            final List<Geometry> spikeTips = new ArrayList<>();
+            final List<Geometry> spikeGlints = new ArrayList<>();
+            Geometry decal;
+            Geometry warningRing;
+            boolean warningPlayed = false;
+            // Высота шипа (полная)
+            static final float SPIKE_H = 0.9f;
+            static final float FLOOR_Y = -0.22f;
+        }
+
+        private final List<PitData> pits = new ArrayList<>();
 
         public GameState(String myNick, List<String> allPlayers, int myIndex, boolean solo,
                          boolean isHost, DatagramSocket socket, String hostAddress, int hostPort,
-                         List<InetSocketAddress> clients, int mapIndex) {
+                         List<InetSocketAddress> clients, int mapIndex, boolean cubesEnabled) {
             this.myNick     = myNick;
             this.allPlayers = allPlayers != null ? allPlayers : Collections.singletonList(myNick);
             this.myIndex    = myIndex < 0 ? 0 : myIndex;
@@ -1316,6 +1740,7 @@ public class SnakeApp extends SimpleApplication {
             this.hostPort   = hostPort;
             this.clients    = clients != null ? clients : new CopyOnWriteArrayList<>();
             this.mapIndex   = mapIndex;
+            this.cubesEnabled = cubesEnabled;
         }
 
         @Override
@@ -1333,8 +1758,8 @@ public class SnakeApp extends SimpleApplication {
 
             assetManager.registerLocator(".", FileLocator.class);
 
-            // Первый ивент — случайно через 60–180 секунд
-            nextEventTimer = 60f + new Random().nextFloat() * 120f;
+            // Первый ивент — быстро через 20–50 секунд
+            nextEventTimer = 20f + new Random().nextFloat() * 30f;
 
             setupLights(); setupPhysics();
             buildOuterWorld();
@@ -1342,7 +1767,7 @@ public class SnakeApp extends SimpleApplication {
             buildClouds();
             createSnakes();
             spawnFood(MAX_FOOD);
-            spawnInitialCubes();
+            if (cubesEnabled) spawnInitialCubes(); // Fix #13
             buildHUD();
             createGameoverUI();
             setupControls();
@@ -1365,14 +1790,14 @@ public class SnakeApp extends SimpleApplication {
             Box dimBox = new Box(W/2f, H/2f, 0.1f);
             Geometry dimGeo = new Geometry("GODim", dimBox);
             Material dimMat = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
-            dimMat.setColor("Color", new ColorRGBA(0,0,0,0.6f));
+            dimMat.setColor("Color", new ColorRGBA(0,0,0,0.65f));
             dimMat.getAdditionalRenderState().setBlendMode(com.jme3.material.RenderState.BlendMode.Alpha);
             dimGeo.setMaterial(dimMat);
             dimGeo.setLocalTranslation(W/2f, H/2f, 5f);
             gameoverNode.attachChild(dimGeo);
 
-            // Карточка
-            float cardW = 400f, cardH = 300f;
+            // Карточка — увеличена для размещения контента
+            float cardW = 500f, cardH = 360f;
             Box cardBox = new Box(cardW/2f, cardH/2f, 0.5f);
             Geometry cardGeo = new Geometry("GOCard", cardBox);
             Material cardMat = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
@@ -1382,33 +1807,41 @@ public class SnakeApp extends SimpleApplication {
             cardGeo.setLocalTranslation(W/2f, H/2f, 5.5f);
             gameoverNode.attachChild(cardGeo);
 
+            // Акцентная линия сверху
+            Box topLine = new Box(cardW/2f, 3f, 0.3f);
+            Geometry topLineGeo = new Geometry("GOTopLine", topLine);
+            topLineGeo.setMaterial(unshaded(assetManager, ACCENT));
+            topLineGeo.setLocalTranslation(W/2f, H/2f + cardH/2f - 3f, 5.8f);
+            gameoverNode.attachChild(topLineGeo);
+
             // Заголовок
             BitmapText goTitle = new BitmapText(font);
-            goTitle.setSize(36); goTitle.setText("ИГРА ОКОНЧЕНА");
+            goTitle.setSize(32); goTitle.setText("ИГРА ОКОНЧЕНА");
             goTitle.setColor(ACCENT);
-            goTitle.setLocalTranslation(W/2f - goTitle.getLineWidth()/2, H/2f + 110, 6f);
             goTitle.setName("GOTitle");
+            goTitle.setLocalTranslation(W/2f - goTitle.getLineWidth()/2f, H/2f + 148f, 6f);
             gameoverNode.attachChild(goTitle);
 
             // Победитель
             BitmapText winnerText = new BitmapText(font);
-            winnerText.setSize(22); winnerText.setColor(ACCENT3);
-            winnerText.setLocalTranslation(W/2f - 180, H/2f + 70, 6f);
+            winnerText.setSize(20); winnerText.setColor(ACCENT3);
             winnerText.setName("GOWinner");
+            winnerText.setLocalTranslation(W/2f - 220f, H/2f + 105f, 6f);
             gameoverNode.attachChild(winnerText);
 
             // Таблица результатов
             BitmapText scoresText = new BitmapText(font);
-            scoresText.setSize(16); scoresText.setColor(TEXT);
-            scoresText.setLocalTranslation(W/2f - 180, H/2f + 30, 6f);
+            scoresText.setSize(15); scoresText.setColor(TEXT);
             scoresText.setName("GOScores");
+            scoresText.setLocalTranslation(W/2f - 220f, H/2f + 65f, 6f);
             gameoverNode.attachChild(scoresText);
 
-            // Кнопки
-            MenuButton btnAgain = new MenuButton("ИГРАТЬ СНОВА", W/2f - 110, H/2f - 70, 200, 44,
+            // Кнопки — по центру, с достаточным отступом и размером
+            float btnW = 200f, btnH = 48f;
+            float btnSpacing = 120f;
+            goPlayAgainBtn = new MenuButton("ИГРАТЬ СНОВА", W/2f - btnSpacing, H/2f - 120f, btnW, btnH,
                     BTN_NORMAL, BTN_HOVER, BTN_PRESS, ACCENT, assetManager, gameoverNode, 6f);
-
-            MenuButton btnMenu = new MenuButton("В ГЛАВНОЕ МЕНЮ", W/2f + 110, H/2f - 70, 200, 44,
+            goMenuBtn = new MenuButton("В МЕНЮ", W/2f + btnSpacing, H/2f - 120f, btnW, btnH,
                     BTN_NORMAL, BTN_HOVER, BTN_PRESS, DANGER, assetManager, gameoverNode, 6f);
         }
 
@@ -1418,15 +1851,68 @@ public class SnakeApp extends SimpleApplication {
             inputManager.setCursorVisible(true);
 
             // Заполняем данные
-            ((BitmapText) gameoverNode.getChild("GOWinner")).setText("Победитель: " + winnerName);
+            Spatial ws = gameoverNode.getChild("GOWinner");
+            if (ws instanceof BitmapText) ((BitmapText)ws).setText("Победитель: " + winnerName);
 
             StringBuilder sb = new StringBuilder();
             for (int i=0; i<snakes.size(); i++) {
                 SnakePlayer s = snakes.get(i);
                 sb.append(i+1).append(". ").append(s.getName())
-                        .append(" - ").append(s.getScore()).append("\n");
+                        .append("  Очки: ").append(s.getScore()).append("\n");
             }
-            ((BitmapText) gameoverNode.getChild("GOScores")).setText(sb.toString());
+            Spatial ss = gameoverNode.getChild("GOScores");
+            if (ss instanceof BitmapText) ((BitmapText)ss).setText(sb.toString());
+
+            // Подписываем мышь на кнопки через отдельный листенер
+            if (!inputManager.hasMapping("GO_Mouse")) {
+                inputManager.addMapping("GO_Mouse", new MouseButtonTrigger(MouseInput.BUTTON_LEFT));
+            }
+            if (!inputManager.hasMapping("GO_MouseMove")) {
+                inputManager.addMapping("GO_MouseMove",
+                        new MouseAxisTrigger(MouseInput.AXIS_X, false), new MouseAxisTrigger(MouseInput.AXIS_X, true),
+                        new MouseAxisTrigger(MouseInput.AXIS_Y, false), new MouseAxisTrigger(MouseInput.AXIS_Y, true));
+            }
+            inputManager.addListener((AnalogListener)(n,v,t) -> {
+                if (!gameoverUIActive) return;
+                com.jme3.math.Vector2f mp = inputManager.getCursorPosition();
+                float mx = mp.x, my = mp.y;
+                if (goPlayAgainBtn != null) goPlayAgainBtn.updateHover(mx, my);
+                if (goMenuBtn != null) goMenuBtn.updateHover(mx, my);
+            }, "GO_MouseMove");
+            inputManager.addListener((ActionListener)(n,p,t) -> {
+                if (!gameoverUIActive) return;
+                com.jme3.math.Vector2f mp = inputManager.getCursorPosition();
+                float mx = mp.x, my = mp.y;
+                if (p) {
+                    if (goPlayAgainBtn != null) goPlayAgainBtn.onPress(mx, my);
+                    if (goMenuBtn != null) goMenuBtn.onPress(mx, my);
+                } else {
+                    if (goPlayAgainBtn != null && goPlayAgainBtn.onRelease(mx, my)) {
+                        // Играть снова: перезапустить с теми же параметрами
+                        restartGame();
+                    } else if (goMenuBtn != null && goMenuBtn.onRelease(mx, my)) {
+                        backToMenu();
+                    }
+                }
+            }, "GO_Mouse");
+        }
+
+        private void restartGame() {
+            netRunning.set(false);
+            if (socket != null) socket.close();
+            // Fix #7: полностью останавливаем музыку перед рестартом
+            for (AudioNode t : themeMusic) if (t != null) { t.stop(); rootNode.detachChild(t); }
+            if (rainSound != null) { rainSound.stop(); rootNode.detachChild(rainSound); rainSound = null; }
+            for (SnakePlayer sp : snakes) sp.cleanup(guiNode);
+            for (BlackCube bc : blackCubes) {
+                if (bc.phy != null) { bc.phy.setEnabled(false); bulletAppState.getPhysicsSpace().remove(bc.phy); }
+            }
+            blackCubes.clear();
+            rootNode.detachAllChildren(); guiNode.detachAllChildren();
+            inputManager.clearMappings();
+            stateManager.detach(bulletAppState); stateManager.detach(this);
+            stateManager.attach(new GameState(myNick, allPlayers, myIndex, solo, isHost,
+                    null, hostAddress, hostPort, clients, mapIndex, cubesEnabled));
         }
 
         // ── Свет ──────────────────────────────────────────────────────────
@@ -1436,9 +1922,50 @@ public class SnakeApp extends SimpleApplication {
             if (mapIndex == 2) sun.setColor(new ColorRGBA(0.6f,0.5f,0.8f,1f));
             else sun.setColor(new ColorRGBA(1f,0.98f,0.9f,1f));
             rootNode.addLight(sun);
+
             AmbientLight amb = new AmbientLight();
-            amb.setColor(new ColorRGBA(0.4f,0.42f,0.5f,1f));
+            amb.setColor(new ColorRGBA(0.35f,0.37f,0.45f,1f));
             rootNode.addLight(amb);
+
+            // Fix #5: Солнце/луна как визуальный объект
+            if (mapIndex != 2) {
+                // Солнце
+                Geometry sunGeo = new Geometry("Sun", new com.jme3.scene.shape.Sphere(12,16,4.5f));
+                Material sunMat = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
+                sunMat.setColor("Color", new ColorRGBA(1f,0.98f,0.75f,1f));
+                sunGeo.setMaterial(sunMat);
+                sunGeo.setLocalTranslation(-80f, 65f, -80f);
+                rootNode.attachChild(sunGeo);
+                // Ореол вокруг солнца
+                Geometry sunHalo = new Geometry("SunHalo", new com.jme3.scene.shape.Sphere(8,12,7f));
+                Material haloMat = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
+                haloMat.setColor("Color", new ColorRGBA(1f,0.95f,0.6f,0.18f));
+                haloMat.getAdditionalRenderState().setBlendMode(com.jme3.material.RenderState.BlendMode.Alpha);
+                sunHalo.setMaterial(haloMat);
+                sunHalo.setLocalTranslation(-80f, 65f, -80f);
+                rootNode.attachChild(sunHalo);
+            } else {
+                // Луна
+                Geometry moonGeo = new Geometry("Moon", new com.jme3.scene.shape.Sphere(10,14,3f));
+                Material moonMat = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
+                moonMat.setColor("Color", new ColorRGBA(0.88f,0.90f,0.98f,1f));
+                moonGeo.setMaterial(moonMat);
+                moonGeo.setLocalTranslation(60f, 70f, -60f);
+                rootNode.attachChild(moonGeo);
+            }
+
+            // Fix #5: Тени (DirectionalLightShadowRenderer) если включены в настройках
+            if (graphicsShadows) {
+                try {
+                    com.jme3.shadow.DirectionalLightShadowRenderer dlsr =
+                            new com.jme3.shadow.DirectionalLightShadowRenderer(assetManager, 1024, 2);
+                    dlsr.setLight(sun);
+                    dlsr.setShadowIntensity(0.45f);
+                    app.getViewPort().addProcessor(dlsr);
+                } catch (Exception e) {
+                    System.out.println("[GFX] Shadows not available: " + e.getMessage());
+                }
+            }
         }
 
         // ── Физика ────────────────────────────────────────────────────────
@@ -1575,6 +2102,62 @@ public class SnakeApp extends SimpleApplication {
 
             // Ямы со шипами (карта 2)
             if (mapIndex == 2) buildPits(space);
+
+            // Кактусы-преграды внутри арены (карта 1 — Пустыня)
+            if (mapIndex == 1) buildDesertCacti(space);
+        }
+
+        /** Кактусы-препятствия внутри пустынной арены */
+        private void buildDesertCacti(PhysicsSpace space) {
+            Material cactMat = unshaded(assetManager, new ColorRGBA(0.18f,0.52f,0.15f,1f));
+            Material spineMat = unshaded(assetManager, new ColorRGBA(0.85f,0.82f,0.65f,1f));
+            Random rng = new Random(77);
+            int cactusCount = 12;
+            for (int i = 0; i < cactusCount; i++) {
+                float angle = rng.nextFloat() * FastMath.TWO_PI;
+                float dist  = 8f + rng.nextFloat() * (MAP_HALF * 0.75f - 8f);
+                float cx = FastMath.cos(angle) * dist;
+                float cz = FastMath.sin(angle) * dist;
+                // Не ставим прямо у старта
+                if (Math.abs(cx) < 6f && Math.abs(cz) < 6f) continue;
+
+                float cactH = 1.6f + rng.nextFloat() * 1.4f;
+                // Fix #2: Кактус — динамический (масса > 0), может быть сбит змейкой
+                Box trunkBox = new Box(0.28f, cactH/2f, 0.28f);
+                Geometry trunk = new Geometry("CactI"+i, trunkBox);
+                trunk.setMaterial(cactMat);
+                trunk.setLocalTranslation(cx, cactH/2f, cz);
+                wallNode.attachChild(trunk);
+                RigidBodyControl trunkPhy = new RigidBodyControl(
+                        new BoxCollisionShape(new Vector3f(0.28f, cactH/2f, 0.28f)), 3.0f); // динамический!
+                trunkPhy.setFriction(1.2f); trunkPhy.setLinearDamping(0.5f); trunkPhy.setAngularDamping(0.7f);
+                trunk.addControl(trunkPhy); space.add(trunkPhy);
+                cacti.add(new CactusData(trunk, trunkPhy, cx, cz));
+
+                // Рука кактуса
+                if (rng.nextBoolean()) {
+                    float armSide = rng.nextBoolean() ? 0.5f : -0.5f;
+                    Box armBox = new Box(0.35f, 0.18f, 0.18f);
+                    Geometry arm = new Geometry("CactA"+i, armBox);
+                    arm.setMaterial(cactMat);
+                    arm.setLocalTranslation(cx + armSide, cactH * 0.6f, cz);
+                    wallNode.attachChild(arm);
+                }
+
+                // Иголки (торчащие шипы)
+                int spineCount = 6 + rng.nextInt(5);
+                for (int j = 0; j < spineCount; j++) {
+                    float sa = rng.nextFloat() * FastMath.TWO_PI;
+                    float sy = rng.nextFloat() * cactH;
+                    float sd = 0.3f + rng.nextFloat() * 0.2f;
+                    Box spineBox = new Box(0.04f, 0.04f, sd);
+                    Geometry spine = new Geometry("CactS"+i+"_"+j, spineBox);
+                    spine.setMaterial(spineMat);
+                    spine.setLocalRotation(new Quaternion().fromAngleAxis(sa, Vector3f.UNIT_Y));
+                    spine.setLocalTranslation(cx + FastMath.cos(sa)*0.3f, sy, cz + FastMath.sin(sa)*0.3f);
+                    wallNode.attachChild(spine);
+                }
+            }
         }
 
         /** Металлические ограждения вместо кирпичей */
@@ -1631,53 +2214,95 @@ public class SnakeApp extends SimpleApplication {
             addBox(new Vector3f(x, 1.75f, z), new Vector3f(0.12f, 1.75f, 0.12f), mat, null);
         }
 
-        /** Ямы со шипами (карта 2) */
+        /** Ямы со шипами (карта 2) — шипы на уровне пола, выдвигаются/задвигаются */
         private void buildPits(PhysicsSpace space) {
             pitNode = new Node("Pits");
             rootNode.attachChild(pitNode);
-            Material pitFloor = unshaded(assetManager, new ColorRGBA(0.10f,0.08f,0.12f,1f));
-            Material spikeMat = unshaded(assetManager, new ColorRGBA(0.75f,0.75f,0.82f,1f));
+            pits.clear();
+
+            Material pitFloor  = unshaded(assetManager, new ColorRGBA(0.10f,0.08f,0.12f,1f));
+            Material wallMat   = unshaded(assetManager, new ColorRGBA(0.12f,0.10f,0.16f,1f));
+            Material warningMat= unshaded(assetManager, new ColorRGBA(0.90f,0.30f,0.10f,1f)); // оранжевое кольцо предупреждения
+            // Чисто-белые шипы
+            Material spikeMat  = unshaded(assetManager, new ColorRGBA(0.96f,0.97f,1.00f,1f));
+            Material spikeTipMat= unshaded(assetManager, new ColorRGBA(1f,1f,1f,1f));
 
             for (float[] pp : PIT_POSITIONS) {
                 float px = pp[0], pz = pp[1];
+                PitData pit = new PitData();
+                pit.position = new Vector3f(px, 0f, pz);
+                pit.radius = PIT_RADIUS;
+                // Fix #10: Разные начальные задержки — каждая яма работает в своём ритме
+                pit.stateTimer = (float)(pits.size()) * (PIT_RETRACTED_DURATION / PIT_POSITIONS.length)
+                        + FastMath.nextRandomFloat() * PIT_RETRACTED_DURATION * 0.5f;
 
-                // Дно ямы
-                Box floor = new Box(PIT_RADIUS, 0.2f, PIT_RADIUS);
+                // Дно ямы (визуальный декор на уровне пола)
+                Box floor = new Box(PIT_RADIUS * 0.9f, 0.15f, PIT_RADIUS * 0.9f);
                 Geometry floorGeo = new Geometry("PitFloor", floor);
                 floorGeo.setMaterial(pitFloor);
-                floorGeo.setLocalTranslation(px, -PIT_DEPTH, pz);
+                floorGeo.setLocalTranslation(px, -0.22f, pz);
                 pitNode.attachChild(floorGeo);
 
-                // Стенки ямы (4 стороны)
-                Material wallMat = unshaded(assetManager, new ColorRGBA(0.12f,0.10f,0.16f,1f));
-                addBox(new Vector3f(px, -PIT_DEPTH/2f,  pz+PIT_RADIUS), new Vector3f(PIT_RADIUS,PIT_DEPTH/2f,0.3f), wallMat, null);
-                addBox(new Vector3f(px, -PIT_DEPTH/2f,  pz-PIT_RADIUS), new Vector3f(PIT_RADIUS,PIT_DEPTH/2f,0.3f), wallMat, null);
-                addBox(new Vector3f(px+PIT_RADIUS, -PIT_DEPTH/2f, pz), new Vector3f(0.3f,PIT_DEPTH/2f,PIT_RADIUS), wallMat, null);
-                addBox(new Vector3f(px-PIT_RADIUS, -PIT_DEPTH/2f, pz), new Vector3f(0.3f,PIT_DEPTH/2f,PIT_RADIUS), wallMat, null);
+                // Fix #10: Рамка ямы опущена на уровень пола (было 0.05f → -0.18f)
+                addBox(new Vector3f(px, -0.18f, pz + PIT_RADIUS), new Vector3f(PIT_RADIUS + 0.15f, 0.04f, 0.15f), wallMat, null);
+                addBox(new Vector3f(px, -0.18f, pz - PIT_RADIUS), new Vector3f(PIT_RADIUS + 0.15f, 0.04f, 0.15f), wallMat, null);
+                addBox(new Vector3f(px + PIT_RADIUS, -0.18f, pz), new Vector3f(0.15f, 0.04f, PIT_RADIUS), wallMat, null);
+                addBox(new Vector3f(px - PIT_RADIUS, -0.18f, pz), new Vector3f(0.15f, 0.04f, PIT_RADIUS), wallMat, null);
 
-                // Шипы на дне
+                // Предупреждающий декал (тёмный круг) на полу
+                Geometry holeDecal = new Geometry("HoleDecal", new Box(PIT_RADIUS - 0.2f, 0.01f, PIT_RADIUS - 0.2f));
+                holeDecal.setMaterial(unshaded(assetManager, new ColorRGBA(0.06f,0.05f,0.09f,1f)));
+                holeDecal.setLocalTranslation(px, -0.19f, pz);
+                pitNode.attachChild(holeDecal);
+                pit.decal = holeDecal;
+
+                // Предупреждающее кольцо (мигает перед выдвижением)
+                Geometry warnRing = new Geometry("WarnRing_"+px+"_"+pz, new Box(PIT_RADIUS - 0.1f, 0.02f, PIT_RADIUS - 0.1f));
+                warnRing.setMaterial(unshaded(assetManager, new ColorRGBA(0.9f,0.3f,0.1f,0f)));
+                Material warnMat2 = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
+                warnMat2.setColor("Color", new ColorRGBA(0.9f,0.3f,0.1f,0f));
+                warnMat2.getAdditionalRenderState().setBlendMode(com.jme3.material.RenderState.BlendMode.Alpha);
+                warnRing.setMaterial(warnMat2);
+                warnRing.setLocalTranslation(px, -0.17f, pz);
+                pitNode.attachChild(warnRing);
+                pit.warningRing = warnRing;
+
+                // Шипы — стартуют НИЖЕ пола (задвинуты), выдвигаются наверх
                 int spikeRows = 4;
-                for (int si=0; si<spikeRows; si++) {
-                    for (int sj=0; sj<spikeRows; sj++) {
-                        float sx = px - PIT_RADIUS*0.7f + si*(PIT_RADIUS*1.4f/(spikeRows-1));
-                        float sz = pz - PIT_RADIUS*0.7f + sj*(PIT_RADIUS*1.4f/(spikeRows-1));
-                        Geometry spike = new Geometry("Spike", new Box(0.08f, 0.5f, 0.08f));
+                float spikeH = 0.9f;   // полная высота шипа
+                float spikeBaseW = 0.09f;
+                for (int si = 0; si < spikeRows; si++) {
+                    for (int sj = 0; sj < spikeRows; sj++) {
+                        float sx = px - PIT_RADIUS * 0.68f + si * (PIT_RADIUS * 1.36f / (spikeRows - 1));
+                        float sz = pz - PIT_RADIUS * 0.68f + sj * (PIT_RADIUS * 1.36f / (spikeRows - 1));
+
+                        // Основание (ствол) шипа
+                        Geometry spike = new Geometry("SpikeBody", new Box(spikeBaseW, spikeH / 2f, spikeBaseW));
                         spike.setMaterial(spikeMat);
-                        spike.setLocalTranslation(sx, -PIT_DEPTH + 0.5f, sz);
+                        // Задвинут: Y = -0.2 - spikeH (полностью под полом)
+                        spike.setLocalTranslation(sx, -0.22f - spikeH, sz);
                         pitNode.attachChild(spike);
-                        // Верхушка (острие)
-                        Geometry tip = new Geometry("SpikeTip", new Sphere(4,4,0.15f));
-                        tip.setMaterial(spikeMat);
-                        tip.setLocalTranslation(sx, -PIT_DEPTH + 1.1f, sz);
+
+                        // Острие шипа (конус через масштабированную сферу)
+                        Geometry tip = new Geometry("SpikeTip", new Sphere(4, 4, spikeBaseW * 1.5f));
+                        tip.setMaterial(spikeTipMat);
+                        tip.setLocalScale(1f, 4f, 1f);
+                        tip.setLocalTranslation(sx, -0.22f - spikeH / 2f - spikeH, sz);
                         pitNode.attachChild(tip);
+
+                        // Блестящий кончик
+                        Geometry glint = new Geometry("SpikeGlint", new Sphere(3, 3, spikeBaseW * 0.7f));
+                        glint.setMaterial(unshaded(assetManager, new ColorRGBA(0.8f, 0.9f, 1f, 1f)));
+                        glint.setLocalTranslation(sx, -0.22f - spikeH, sz);
+                        pitNode.attachChild(glint);
+
+                        pit.spikes.add(spike);
+                        pit.spikeTips.add(tip);
+                        pit.spikeGlints.add(glint);
                     }
                 }
 
-                // Визуальное обозначение ямы — тёмный круг на полу арены
-                Geometry holeDecal = new Geometry("HoleDecal", new Box(PIT_RADIUS-0.3f, 0.01f, PIT_RADIUS-0.3f));
-                holeDecal.setMaterial(unshaded(assetManager, new ColorRGBA(0.05f,0.04f,0.08f,1f)));
-                holeDecal.setLocalTranslation(px, -0.18f, pz);
-                pitNode.attachChild(holeDecal);
+                pits.add(pit);
             }
         }
 
@@ -1713,7 +2338,9 @@ public class SnakeApp extends SimpleApplication {
         private void createSnakes() {
             for (int i=0;i<allPlayers.size();i++) {
                 Node sn = new Node("Snake"+i); rootNode.attachChild(sn);
-                Material mat = unshaded(assetManager, SNAKE_COLORS[i%SNAKE_COLORS.length]);
+                // Локальный игрок получает выбранный цвет
+                ColorRGBA snakeColor = (i == myIndex) ? selectedSnakeColor : SNAKE_COLORS[i%SNAKE_COLORS.length];
+                Material mat = unshaded(assetManager, snakeColor);
                 SnakePlayer sp = new SnakePlayer(
                         allPlayers.get(i), START_POS[i%START_POS.length].clone(),
                         START_ANGLES[i%START_ANGLES.length], mat, sn, assetManager, guiNode, cam,
@@ -1822,6 +2449,14 @@ public class SnakeApp extends SimpleApplication {
             centerMsg.setSize(38);
             centerMsg.setColor(new ColorRGBA(1f, 1f, 0.2f, 0f));
             guiNode.attachChild(centerMsg);
+
+            // Индикатор рывка (снизу справа)
+            dashCooldownText = new BitmapText(font);
+            dashCooldownText.setSize(16);
+            dashCooldownText.setColor(ACCENT2);
+            dashCooldownText.setText("РЫВОК: ГОТОВ [SHIFT]");
+            dashCooldownText.setLocalTranslation(W - 260f, 40f, 0);
+            guiNode.attachChild(dashCooldownText);
         }
 
         private void showCenter(String msg, ColorRGBA c) {
@@ -1848,21 +2483,158 @@ public class SnakeApp extends SimpleApplication {
                 snakes.get(myIndex).setMoving(p);
             }, "Forward");
 
+            // Рывок
+            inputManager.addMapping("Dash", new KeyTrigger(KeyInput.KEY_LSHIFT), new KeyTrigger(KeyInput.KEY_RSHIFT));
+            inputManager.addListener((ActionListener)(n,p,t) -> {
+                if (!p || gameOver || myIndex>=snakes.size()) return;
+                if (dashCooldown <= 0f) {
+                    dashTimer = DASH_DURATION;
+                    dashCooldown = DASH_COOLDOWN_MAX;
+                }
+            }, "Dash");
+
             inputManager.addMapping("SpecPrev", new MouseButtonTrigger(MouseInput.BUTTON_LEFT));
             inputManager.addMapping("SpecNext", new MouseButtonTrigger(MouseInput.BUTTON_RIGHT));
             inputManager.addListener((ActionListener)(n,p,t) -> {
-                if (!p || !spectating) return;
+                if (!p || !spectating || gameoverUIActive) return;
                 if ("SpecPrev".equals(n)) spectateTarget=(spectateTarget-1+snakes.size())%snakes.size();
                 if ("SpecNext".equals(n)) spectateTarget=(spectateTarget+1)%snakes.size();
                 for (int i=0;i<snakes.size();i++) if (!snakes.get(spectateTarget).isDead()) break;
                 else spectateTarget=(spectateTarget+1)%snakes.size();
             }, "SpecPrev", "SpecNext");
 
-            inputManager.addMapping("Escape", new KeyTrigger(KeyInput.KEY_ESCAPE));
-            inputManager.addListener((ActionListener)(n,p,t) -> {
-                if (!p) return;
-                backToMenu();
-            }, "Escape");
+            // Пауза и чит-код через RawInputListener
+            inputManager.addRawInputListener(new com.jme3.input.RawInputListener() {
+                @Override public void onKeyEvent(com.jme3.input.event.KeyInputEvent evt) {
+                    if (!evt.isPressed()) return;
+                    int code = evt.getKeyCode();
+
+                    // Пауза ESC
+                    if (code == KeyInput.KEY_ESCAPE) {
+                        app.enqueue(() -> togglePause());
+                        return;
+                    }
+
+                    // Чит-код KOPRFDC (только соло или хост)
+                    if (solo || isHost) {
+                        if (code == CHEAT_CODE[cheatCodeIndex]) {
+                            cheatCodeIndex++;
+                            if (cheatCodeIndex >= CHEAT_CODE.length) {
+                                cheatCodeIndex = 0;
+                                app.enqueue(() -> activateCheatCode());
+                            }
+                        } else {
+                            cheatCodeIndex = (code == CHEAT_CODE[0]) ? 1 : 0;
+                        }
+                    }
+                }
+                @Override public void beginInput() {}
+                @Override public void endInput() {}
+                @Override public void onMouseMotionEvent(com.jme3.input.event.MouseMotionEvent evt) {}
+                @Override public void onMouseButtonEvent(com.jme3.input.event.MouseButtonEvent evt) {}
+                @Override public void onJoyAxisEvent(com.jme3.input.event.JoyAxisEvent evt) {}
+                @Override public void onJoyButtonEvent(com.jme3.input.event.JoyButtonEvent evt) {}
+                @Override public void onTouchEvent(com.jme3.input.event.TouchEvent evt) {}
+            });
+        }
+
+        private void togglePause() {
+            if (gameOver || gameoverUIActive) return;
+            if (!solo && !isHost) return; // мультиплеер: пауза только у хоста
+            pauseActive = !pauseActive;
+            inputManager.setCursorVisible(pauseActive);
+            if (pauseActive) {
+                if (pauseNode == null) buildPauseUI();
+                pauseNode.setCullHint(Spatial.CullHint.Inherit);
+            } else {
+                if (pauseNode != null) pauseNode.setCullHint(Spatial.CullHint.Always);
+            }
+        }
+
+        private void buildPauseUI() {
+            float W = cam.getWidth(), H = cam.getHeight();
+            BitmapFont font = loadFont(assetManager);
+            pauseNode = new Node("PauseUI");
+
+            Box dimBox = new Box(W/2f, H/2f, 0.1f);
+            Geometry dimGeo = new Geometry("PauseDim", dimBox);
+            Material dimMat = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
+            dimMat.setColor("Color", new ColorRGBA(0,0,0,0.55f));
+            dimMat.getAdditionalRenderState().setBlendMode(com.jme3.material.RenderState.BlendMode.Alpha);
+            dimGeo.setMaterial(dimMat); dimGeo.setLocalTranslation(W/2f, H/2f, 7f);
+            pauseNode.attachChild(dimGeo);
+
+            Box cardBox = new Box(280f, 220f, 0.5f);
+            Geometry cardGeo = new Geometry("PauseCard", cardBox);
+            Material cardMat = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
+            cardMat.setColor("Color", BG_CARD);
+            cardMat.getAdditionalRenderState().setBlendMode(com.jme3.material.RenderState.BlendMode.Alpha);
+            cardGeo.setMaterial(cardMat); cardGeo.setLocalTranslation(W/2f, H/2f, 7.5f);
+            pauseNode.attachChild(cardGeo);
+
+            BitmapText pauseTitle = new BitmapText(font);
+            pauseTitle.setSize(36); pauseTitle.setText("ПАУЗА"); pauseTitle.setColor(ACCENT2);
+            pauseTitle.setLocalTranslation(W/2f - pauseTitle.getLineWidth()/2, H/2f + 170, 8f);
+            pauseNode.attachChild(pauseTitle);
+
+            pauseResumeBtn = new MenuButton("ПРОДОЛЖИТЬ", W/2f, H/2f + 80f, 240f, 48f,
+                    BTN_NORMAL, BTN_HOVER, BTN_PRESS, ACCENT, assetManager, pauseNode, 8f);
+            pauseMenuBtn = new MenuButton("В МЕНЮ", W/2f, H/2f - 10f, 240f, 48f,
+                    BTN_NORMAL, BTN_HOVER, BTN_PRESS, DANGER, assetManager, pauseNode, 8f);
+
+            // Если хост мультиплеера — кнопка вернуть в лобби
+            if (!solo && isHost) {
+                MenuButton lobbyBtn = new MenuButton("ВЕРНУТЬ В ЛОББИ", W/2f, H/2f - 100f, 240f, 48f,
+                        BTN_NORMAL, BTN_HOVER, BTN_PRESS, ACCENT3, assetManager, pauseNode, 8f);
+                pauseNode.setUserData("hasLobbyBtn", true);
+            }
+
+            guiNode.attachChild(pauseNode);
+            pauseNode.setCullHint(Spatial.CullHint.Always);
+
+            // Мышь для паузы
+            if (!inputManager.hasMapping("Pause_Mouse")) {
+                inputManager.addMapping("Pause_Mouse", new MouseButtonTrigger(MouseInput.BUTTON_LEFT));
+                inputManager.addMapping("Pause_MouseMove",
+                        new MouseAxisTrigger(MouseInput.AXIS_X, false), new MouseAxisTrigger(MouseInput.AXIS_X, true),
+                        new MouseAxisTrigger(MouseInput.AXIS_Y, false), new MouseAxisTrigger(MouseInput.AXIS_Y, true));
+            }
+            inputManager.addListener((AnalogListener)(n,v,t) -> {
+                if (!pauseActive) return;
+                com.jme3.math.Vector2f mp = inputManager.getCursorPosition();
+                float mx = mp.x, my = mp.y;
+                if (pauseResumeBtn != null) pauseResumeBtn.updateHover(mx, my);
+                if (pauseMenuBtn != null)   pauseMenuBtn.updateHover(mx, my);
+            }, "Pause_MouseMove");
+            inputManager.addListener((ActionListener)(n2,p2,t2) -> {
+                if (!pauseActive) return;
+                com.jme3.math.Vector2f mp = inputManager.getCursorPosition();
+                float mx = mp.x, my = mp.y;
+                if (p2) {
+                    if (pauseResumeBtn != null) pauseResumeBtn.onPress(mx, my);
+                    if (pauseMenuBtn != null)   pauseMenuBtn.onPress(mx, my);
+                } else {
+                    if (pauseResumeBtn != null && pauseResumeBtn.onRelease(mx, my)) {
+                        togglePause();
+                    } else if (pauseMenuBtn != null && pauseMenuBtn.onRelease(mx, my)) {
+                        backToMenu();
+                    }
+                }
+            }, "Pause_Mouse");
+        }
+
+        private void activateCheatCode() {
+            if (bordersRemoved) return;
+            bordersRemoved = true;
+            showCenter("⚡ ГРАНИЦЫ СНЯТЫ ⚡", new ColorRGBA(1f,1f,0.1f,1f));
+            // Снимаем физические коллайдеры стен — змейка может уходить за карту
+            PhysicsSpace space = bulletAppState.getPhysicsSpace();
+            wallNode.getChildren().forEach(child -> {
+                if (child instanceof Geometry) {
+                    RigidBodyControl rb = ((Geometry)child).getControl(RigidBodyControl.class);
+                    if (rb != null) space.remove(rb);
+                }
+            });
         }
 
         // ── Звуки ─────────────────────────────────────────────────────────
@@ -2000,6 +2772,18 @@ public class SnakeApp extends SimpleApplication {
                     if (p.length>=2) { showCenter(p[1]+" ПОБЕДИЛ!", new ColorRGBA(1f,0.85f,0.1f,1f)); gameOver=true; exitTimer=8f; } break;
                 case "BACK_LOBBY":
                     app.enqueue(this::backToMenu); break;
+                case "SPIKE_STATE":
+                    // SPIKE_STATE|pitIdx|stateOrd|timer
+                    if (p.length >= 4 && !isHost) {
+                        int pitIdx = Integer.parseInt(p[1]);
+                        int stateOrd = Integer.parseInt(p[2]);
+                        float timer = Float.parseFloat(p[3]);
+                        if (pitIdx >= 0 && pitIdx < pits.size()) {
+                            PitData pd = pits.get(pitIdx);
+                            pd.state = PitState.values()[stateOrd];
+                            pd.stateTimer = timer;
+                        }
+                    } break;
                 case "CUBE_SPAWN":
                     if (p.length>=4) spawnBlackCube(Integer.parseInt(p[1]),Float.parseFloat(p[2]),Float.parseFloat(p[3]));
                     break;
@@ -2021,6 +2805,19 @@ public class SnakeApp extends SimpleApplication {
                     if (!ballRainActive) startBallRainEvent(); break;
                 case "EVENT_RAIN":
                     if (!weatherRainActive) startWeatherRainEvent(); break;
+                case "EVENT_FROZEN": // Fix #12
+                    if (!frozenArenaActive) startFrozenArenaEvent(); break;
+                case "CACT_HIT": // Fix #2: синхронизация разрушения кактуса по сети
+                    if (p.length >= 3) {
+                        float cx2 = Float.parseFloat(p[1]), cz2 = Float.parseFloat(p[2]);
+                        for (CactusData cd : cacti) {
+                            if (!cd.hit && Math.abs(cd.origX-cx2)<0.5f && Math.abs(cd.origZ-cz2)<0.5f) {
+                                cd.hit = true;
+                                cd.phy.applyImpulse(new Vector3f(FastMath.nextRandomFloat()*10f,5f,FastMath.nextRandomFloat()*10f), Vector3f.ZERO);
+                                break;
+                            }
+                        }
+                    } break;
                 case "BALL_SPAWN":
                     if (p.length>=3) spawnRainBall(Float.parseFloat(p[1]), Float.parseFloat(p[2]));
                     break;
@@ -2060,7 +2857,7 @@ public class SnakeApp extends SimpleApplication {
                 if (ballRainTimer <= 0f) {
                     ballRainActive = false;
                     showCenter("★ Шариковый дождь закончился. Собирай шарики! ★", new ColorRGBA(0.8f,0.5f,1f,1f));
-                    if (solo || isHost) nextEventTimer = 120f + eventRng.nextFloat() * 180f;
+                    if (solo || isHost) nextEventTimer = 25f + eventRng.nextFloat() * 45f;
                 } else {
                     ballRainSpawnTimer -= tpf;
                     if (ballRainSpawnTimer <= 0f && (solo || isHost)) {
@@ -2145,7 +2942,8 @@ public class SnakeApp extends SimpleApplication {
             showCenter("☔ ДОЖДЬ!", new ColorRGBA(0.5f,0.7f,1f,1f));
             if (!solo) sendNet("EVENT_RAIN");
             try {
-                rainSound = new AudioNode(assetManager, "Sounds/inv/Rain1.ogg", DataType.Buffer);
+                // Fix #9: DataType.Stream вместо Buffer — непрерывный loop без микро-паузы
+                rainSound = new AudioNode(assetManager, "Sounds/inv/Rain1.ogg", DataType.Stream);
                 rainSound.setPositional(false); rainSound.setLooping(true);
                 rainSound.setVolume(effectVolume * 0.8f);
                 rootNode.attachChild(rainSound); rainSound.play();
@@ -2160,7 +2958,7 @@ public class SnakeApp extends SimpleApplication {
                     if (rainSound!=null) { rainSound.stop(); rootNode.detachChild(rainSound); rainSound=null; }
                     showCenter("Дождь закончился. Лужи медленно высыхают.", new ColorRGBA(0.7f,0.8f,1f,1f));
                     waterSpeedMultiplier = 1.0f;
-                    if (solo || isHost) nextEventTimer = 120f + eventRng.nextFloat() * 180f;
+                    if (solo || isHost) nextEventTimer = 25f + eventRng.nextFloat() * 45f;
                 } else {
                     for (int i=0;i<8;i++) {
                         float rx = (FastMath.nextRandomFloat()-0.5f)*MAP_HALF*2f;
@@ -2240,6 +3038,41 @@ public class SnakeApp extends SimpleApplication {
             waterPuddles.add(new WaterPuddle(geo, x, z, radius));
         }
 
+        // ── ИВЕНТ 3: Ледяная арена (Fix #12) ─────────────────────────────
+        private void startFrozenArenaEvent() {
+            if (frozenArenaActive) return;
+            frozenArenaActive = true; frozenArenaTimer = FROZEN_ARENA_DURATION;
+            frozenSpeedMult = 0.40f; // замедление — лёд!
+            showCenter("❄️ ЛЕДЯНАЯ АРЕНА! Осторожно — лёд! ❄️", new ColorRGBA(0.6f,0.9f,1f,1f));
+            if (!solo) sendNet("EVENT_FROZEN");
+            // Покрасить пол в ледяной цвет (визуальный эффект)
+            if (wallNode != null) {
+                wallNode.depthFirstTraversal(spatial -> {
+                    if (spatial instanceof Geometry g && "Box".equals(g.getMesh().getClass().getSimpleName())) {
+                        Material m = g.getMaterial();
+                        if (m != null) {
+                            Object col = m.getParamValue("Color");
+                            if (col instanceof ColorRGBA c && c.g > 0.45f && c.b < 0.6f) {
+                                // Зелёный пол → ледяной голубой
+                                m.setColor("Color", new ColorRGBA(0.65f, 0.85f, 1.00f, 1f));
+                            }
+                        }
+                    }
+                });
+            }
+        }
+
+        private void updateFrozenArena(float tpf) {
+            if (!frozenArenaActive) return;
+            frozenArenaTimer -= tpf;
+            if (frozenArenaTimer <= 0f) {
+                frozenArenaActive = false;
+                frozenSpeedMult = 1f;
+                showCenter("❄️ Лёд растаял. Скорость восстановлена.", new ColorRGBA(0.6f,0.9f,1f,1f));
+                if (solo || isHost) nextEventTimer = 25f + eventRng.nextFloat() * 45f;
+            }
+        }
+
         // ── Кубы-враги ────────────────────────────────────────────────────
         private void spawnInitialCubes() {
             cubeNode = new Node("BlackCubes"); rootNode.attachChild(cubeNode);
@@ -2305,11 +3138,12 @@ public class SnakeApp extends SimpleApplication {
                     }
                 }
 
-                // ИИ: ВСЕГДА ищем ближайшую живую змейку и атакуем
+                // ИИ: преследуем только если змейка близко, иначе патруль
                 if (bc.impulseTimer<=0f && bc.phy!=null) {
                     Vector3f cubePos = bc.phy.getPhysicsLocation(null);
+                    final float CHASE_RANGE = 18f; // дистанция начала преследования
 
-                    // Найти ближайшую живую змейку (всегда!)
+                    // Найти ближайшую живую змейку
                     SnakePlayer nearest = null;
                     float minDist = Float.MAX_VALUE;
                     for (SnakePlayer s : snakes) {
@@ -2318,29 +3152,29 @@ public class SnakeApp extends SimpleApplication {
                         if (d<minDist) { minDist=d; nearest=s; }
                     }
 
-                    if (nearest != null) {
-                        // ВСЕГДА преследуем — независимо от дистанции
+                    if (nearest != null && minDist < CHASE_RANGE) {
+                        // Преследуем только если игрок достаточно близко
                         bc.chasing = true;
                         Vector3f toSnake = nearest.getHeadPos().subtract(cubePos).setY(0);
                         if (toSnake.lengthSquared() > 0.001f) toSnake.normalizeLocal();
 
-                        // Сила зависит от расстояния: чем дальше — больше сила, чтоб догнать
-                        float dist = minDist;
-                        float urgency = Math.min(1f, dist / 25f);
-                        float force = 90f + urgency * 110f; // 90-200 Н
+                        // Сила зависит от числа укусов (куб тяжелеет): bc.biteCount замедляет
+                        float massFactor = 1f / (1f + bc.biteCount * 0.15f);
+                        float urgency = Math.min(1f, minDist / CHASE_RANGE);
+                        float force = (80f + urgency * 80f) * massFactor;
 
                         bc.phy.applyCentralForce(toSnake.mult(force));
                         Vector3f rollAxis = new Vector3f(toSnake.z, 0f, -toSnake.x).normalizeLocal();
                         bc.phy.applyTorque(rollAxis.mult(force*0.4f));
                     } else {
-                        // Нет живых — патруль
+                        // Патруль или нет живых
                         bc.chasing = false;
                         if (bc.patrolChangeTimer<=0f) {
                             bc.patrolAngle += (FastMath.nextRandomFloat()-0.5f)*FastMath.PI;
                             bc.patrolChangeTimer = 2.5f + FastMath.nextRandomFloat()*3f;
                         }
                         float px=FastMath.sin(bc.patrolAngle), pz=FastMath.cos(bc.patrolAngle);
-                        float patrolForce = 60f + FastMath.nextRandomFloat()*20f;
+                        float patrolForce = 45f + FastMath.nextRandomFloat()*15f;
                         bc.phy.applyCentralForce(new Vector3f(px*patrolForce, 0, pz*patrolForce));
                     }
                 }
@@ -2375,7 +3209,7 @@ public class SnakeApp extends SimpleApplication {
                 if (v<=0f) bc.hitCooldowns.remove(key); else bc.hitCooldowns.put(key,v);
             }
 
-            final float hitThreshold = 0.7f + SnakePlayer.SEG_R;
+            final float hitThreshold = (0.7f * (1f + bc.biteCount * 0.12f)) + SnakePlayer.SEG_R; // Fix #4: учитываем рост куба
             for (int si=0;si<snakes.size();si++) {
                 SnakePlayer s = snakes.get(si);
                 if (s.isDead()) continue;
@@ -2394,8 +3228,10 @@ public class SnakeApp extends SimpleApplication {
                     if (fromHit.lengthSquared()<0.001f)
                         fromHit = new Vector3f(FastMath.nextRandomFloat()-0.5f,0,FastMath.nextRandomFloat()-0.5f);
                     fromHit.normalizeLocal();
-                    bc.phy.applyImpulse(fromHit.mult(55f).addLocal(0,4f,0), Vector3f.ZERO);
-                    float spin=(FastMath.nextRandomFloat()-0.5f)*15f;
+                    // Fix #4: уменьшен импульс отталкивания (было 55f → 18f), иначе куб улетал
+                    float impulseMag = 18f / (1f + bc.biteCount * 0.2f);
+                    bc.phy.applyImpulse(fromHit.mult(impulseMag).addLocal(0,2f,0), Vector3f.ZERO);
+                    float spin=(FastMath.nextRandomFloat()-0.5f)*8f;
                     bc.phy.setAngularVelocity(new Vector3f(spin,spin*0.3f,spin));
                     bc.impulseTimer = 0.8f;
                     if (!solo) sendNet("CUBE_HIT|"+bc.id+"|"+si);
@@ -2417,6 +3253,35 @@ public class SnakeApp extends SimpleApplication {
             } else {
                 if (snakeIdx==myIndex) showCenter("Куб атаковал!", new ColorRGBA(1f,0.2f,0.2f,1f));
             }
+            // Куб растёт от укуса — Fix #4: пересоздаём физическое тело с правильным размером
+            for (BlackCube bc : blackCubes) {
+                if (bc.id == cubeId) {
+                    bc.biteCount++;
+                    float growScale = 1f + bc.biteCount * 0.12f;
+                    bc.geo.setLocalScale(growScale, growScale, growScale);
+                    // Пересоздаём физику с увеличенным коллайдером (нет клиппинга в текстуры)
+                    if (bc.phy != null && bulletAppState != null) {
+                        Vector3f currentPos = bc.phy.getPhysicsLocation(null);
+                        Quaternion currentRot = bc.phy.getPhysicsRotation(null);
+                        float newMass = 5f + bc.biteCount * 2.5f;  // тяжелее → медленнее
+                        float newSide = 0.7f * growScale;
+                        bc.phy.setEnabled(false);
+                        bulletAppState.getPhysicsSpace().remove(bc.phy);
+                        bc.geo.removeControl(bc.phy);
+                        RigidBodyControl newPhy = new RigidBodyControl(
+                                new BoxCollisionShape(new Vector3f(newSide, newSide, newSide)), newMass);
+                        newPhy.setFriction(1.5f); newPhy.setRestitution(0.25f);
+                        newPhy.setAngularDamping(0.70f); newPhy.setLinearDamping(0.90f);
+                        bc.geo.addControl(newPhy);
+                        bulletAppState.getPhysicsSpace().add(newPhy);
+                        newPhy.setPhysicsLocation(new Vector3f(currentPos.x, Math.max(newSide, currentPos.y), currentPos.z));
+                        newPhy.setPhysicsRotation(currentRot);
+                        // Обновляем ссылку (через отражение недоступно, пересоздаём объект)
+                        bc.updatePhy(newPhy);
+                    }
+                    break;
+                }
+            }
             playSound(chitSound);
         }
 
@@ -2432,25 +3297,39 @@ public class SnakeApp extends SimpleApplication {
         // ── Главный цикл ──────────────────────────────────────────────────
         @Override
         public void update(float tpf) {
+            // Пауза — замораживаем всё
+            if (pauseActive) return;
+
             updateMusic(tpf);
             moveClouds(tpf);
             gameTime += tpf;
+
+            // Обновление рывка
+            if (dashTimer > 0f) dashTimer -= tpf;
+            if (dashCooldown > 0f) {
+                dashCooldown -= tpf;
+                if (dashCooldown < 0f) dashCooldown = 0f;
+            }
+            updateDashHUD();
 
             // Таймер игры
             int mins = (int)(gameTime/60); int secs = (int)(gameTime%60);
             gameTimerText.setText(String.format("%d:%02d", mins, secs));
 
             // Планировщик случайных ивентов (хост/соло) — повторяются каждые 2–5 мин
-            if ((solo || isHost) && !ballRainActive && !weatherRainActive && nextEventTimer > 0) {
+            if ((solo || isHost) && !ballRainActive && !weatherRainActive && !frozenArenaActive && nextEventTimer > 0) {
                 nextEventTimer -= tpf;
                 if (nextEventTimer <= 0) {
-                    if (eventRng.nextBoolean()) startBallRainEvent();
-                    else startWeatherRainEvent();
+                    int evtChoice = eventRng.nextInt(3);
+                    if (evtChoice == 0) startBallRainEvent();
+                    else if (evtChoice == 1) startWeatherRainEvent();
+                    else startFrozenArenaEvent(); // Fix #12
                 }
             }
 
             updateBallRain(tpf);
             updateWeatherRain(tpf);
+            updateFrozenArena(tpf); // Fix #12
 
             if (centerMsgTimer>0) {
                 centerMsgTimer -= tpf;
@@ -2473,14 +3352,25 @@ public class SnakeApp extends SimpleApplication {
             if (regularFood<MAX_FOOD) { if (solo) addOneFood(); else if (isHost) hostAddAndBroadcastFood(); }
             if (isHost) checkWinCondition();
 
-            // Обновить змей (с замедлением от воды)
-            float effectiveSpeed = SPEED * waterSpeedMultiplier;
-            for (SnakePlayer s : snakes) if (!s.isDead()) s.update(tpf, effectiveSpeed, TURN_SPEED, SEG_SPACING);
+            // Обновить змей (с замедлением от воды и рывком)
+            float effectiveSpeed = SPEED * waterSpeedMultiplier * frozenSpeedMult; // Fix #12
+            if (dashTimer > 0f && myIndex < snakes.size() && !snakes.get(myIndex).isDead()) {
+                // Рывок применяется только к локальному игроку
+                for (int i = 0; i < snakes.size(); i++) {
+                    float spd = (i == myIndex) ? effectiveSpeed * DASH_SPEED_MULT : effectiveSpeed;
+                    if (!snakes.get(i).isDead()) snakes.get(i).update(tpf, spd, TURN_SPEED, SEG_SPACING);
+                }
+            } else {
+                for (SnakePlayer s : snakes) if (!s.isDead()) s.update(tpf, effectiveSpeed, TURN_SPEED, SEG_SPACING);
+            }
 
             checkCollisions();
 
             // Проверка ям (карта 2)
-            if (mapIndex==2 && (solo||isHost)) checkPits();
+            if (mapIndex==2) {
+                if (solo || isHost) updatePits(tpf);
+                if (solo || isHost) checkPits();
+            }
 
             // Сетевые отправки
             if (!solo) {
@@ -2511,18 +3401,116 @@ public class SnakeApp extends SimpleApplication {
             updateBlackCubes(tpf);
         }
 
-        /** Проверка ям — змейка падает в яму = смерть */
+        /** Обновление анимации шипов (карта 2) — вызывается каждый кадр */
+        private void updatePits(float tpf) {
+            if (mapIndex != 2) return;
+            for (int pi = 0; pi < pits.size(); pi++) {
+                PitData pit = pits.get(pi);
+                pit.stateTimer -= tpf;
+                float progress; // 0=задвинуто, 1=выдвинуто
+
+                switch (pit.state) {
+                    case RETRACTED:
+                        // Мигание предупреждения за PIT_WARNING_TIME до выдвижения
+                        if (pit.stateTimer <= PIT_WARNING_TIME) {
+                            pit.warnFlashTimer += tpf;
+                            float alpha = (FastMath.sin(pit.warnFlashTimer * 20f) * 0.5f + 0.5f) * 0.8f;
+                            if (pit.warningRing != null)
+                                pit.warningRing.getMaterial().setColor("Color", new ColorRGBA(0.9f,0.3f,0.1f,alpha));
+                        }
+                        if (pit.stateTimer <= 0f) {
+                            pit.state = PitState.EXTENDING;
+                            pit.stateTimer = PIT_EXTENDING_DURATION;
+                            pit.warnFlashTimer = 0f;
+                            if (pit.warningRing != null)
+                                pit.warningRing.getMaterial().setColor("Color", new ColorRGBA(0.9f,0.3f,0.1f,0f));
+                            // Синхронизация по сети
+                            if (!solo) sendNet("SPIKE_STATE|" + pi + "|1|" + PIT_EXTENDING_DURATION);
+                        }
+                        setSpikeProgress(pit, 0f);
+                        break;
+
+                    case EXTENDING:
+                        progress = 1f - Math.max(0f, pit.stateTimer / PIT_EXTENDING_DURATION);
+                        setSpikeProgress(pit, progress);
+                        if (pit.stateTimer <= 0f) {
+                            pit.state = PitState.EXTENDED;
+                            pit.stateTimer = PIT_EXTENDED_DURATION;
+                            if (!solo) sendNet("SPIKE_STATE|" + pi + "|2|" + PIT_EXTENDED_DURATION);
+                        }
+                        break;
+
+                    case EXTENDED:
+                        setSpikeProgress(pit, 1f);
+                        if (pit.stateTimer <= 0f) {
+                            pit.state = PitState.RETRACTING;
+                            pit.stateTimer = PIT_RETRACTING_DURATION;
+                            if (!solo) sendNet("SPIKE_STATE|" + pi + "|3|" + PIT_RETRACTING_DURATION);
+                        }
+                        break;
+
+                    case RETRACTING:
+                        progress = Math.max(0f, pit.stateTimer / PIT_RETRACTING_DURATION);
+                        setSpikeProgress(pit, progress);
+                        if (pit.stateTimer <= 0f) {
+                            pit.state = PitState.RETRACTED;
+                            pit.stateTimer = PIT_RETRACTED_DURATION;
+                            if (!solo) sendNet("SPIKE_STATE|" + pi + "|0|" + PIT_RETRACTED_DURATION);
+                        }
+                        break;
+                }
+            }
+        }
+
+        /** Устанавливает высоту шипов (0=под полом, 1=полностью выдвинуты) */
+        private void setSpikeProgress(PitData pit, float p) {
+            float floorY = PitData.FLOOR_Y;
+            float spikeH = PitData.SPIKE_H;
+            // Задвинуто: тело шипа центр = floorY - spikeH (полностью под полом)
+            // Выдвинуто: тело шипа центр = floorY + spikeH/2 (торчит наружу)
+            float bodyY  = floorY - spikeH + p * (spikeH + spikeH / 2f);
+            float tipY   = bodyY + spikeH / 2f + spikeH * 0.3f;
+            float glintY = bodyY + spikeH / 2f;
+            for (int i = 0; i < pit.spikes.size(); i++) {
+                Geometry s = pit.spikes.get(i);
+                Vector3f st = s.getLocalTranslation();
+                s.setLocalTranslation(st.x, bodyY, st.z);
+                if (i < pit.spikeTips.size()) {
+                    Geometry t = pit.spikeTips.get(i);
+                    Vector3f tt = t.getLocalTranslation();
+                    t.setLocalTranslation(tt.x, tipY, tt.z);
+                }
+                if (i < pit.spikeGlints.size()) {
+                    Geometry g = pit.spikeGlints.get(i);
+                    Vector3f gt = g.getLocalTranslation();
+                    g.setLocalTranslation(gt.x, glintY, gt.z);
+                }
+            }
+        }
+
+        /** Проверка ям — голова = смерть, тело = удаление сегмента (только при EXTENDED) */
         private void checkPits() {
-            for (int si=0;si<snakes.size();si++) {
+            for (int si = 0; si < snakes.size(); si++) {
                 SnakePlayer s = snakes.get(si);
                 if (s.isDead()) continue;
                 Vector3f head = s.getHeadPos();
-                for (float[] pp : PIT_POSITIONS) {
-                    float dx = head.x - pp[0], dz = head.z - pp[1];
-                    if (Math.sqrt(dx*dx+dz*dz) < PIT_RADIUS * 0.75f) {
-                        killSnake(si, "упал в яму со шипами!");
+
+                for (PitData pit : pits) {
+                    float dx = head.x - pit.position.x;
+                    float dz = head.z - pit.position.z;
+                    float distHead = (float)Math.sqrt(dx*dx + dz*dz);
+
+                    // Урон только когда шипы выдвинуты (EXTENDED)
+                    if (pit.state != PitState.EXTENDED) continue;
+
+                    // Голова попала в зону шипов — мгновенная смерть
+                    if (distHead < pit.radius * 0.80f) {
+                        killSnake(si, "попал на шипы!");
                         break;
                     }
+
+                    // Тело (хвост) попало на шипы — удаляем затронутый сегмент
+                    s.removeSegmentsAtWorldPos(new Vector3f(pit.position.x, head.y, pit.position.z), pit.radius * 0.75f);
                 }
             }
         }
@@ -2532,7 +3520,7 @@ public class SnakeApp extends SimpleApplication {
             if (me==null||me.isDead()) return;
             Vector3f h = me.getHeadPos();
             float wallBound = MAP_HALF - 0.9f - SnakePlayer.SEG_R;
-            boolean wallHit = Math.abs(h.x)>wallBound || Math.abs(h.z)>wallBound;
+            boolean wallHit = !bordersRemoved && (Math.abs(h.x)>wallBound || Math.abs(h.z)>wallBound);
             boolean selfHit = me.selfCollides(SEG_SPACING*0.8f);
             if (wallHit||selfHit) { killSnake(myIndex, wallHit?"стена":"самопересечение"); return; }
 
@@ -2543,7 +3531,62 @@ public class SnakeApp extends SimpleApplication {
                     killSnake(myIndex, "столкновение с "+other.getName()); return;
                 }
             }
+
+            // Fix #2: Коллизия с кактусами на карте 1
+            if (mapIndex == 1) checkCactusCollisions(me);
+
             checkFoodFor(me);
+        }
+
+        /** Fix #2: Проверка столкновения головы змеи с кактусами → разрушение + прилипание к телу */
+        private void checkCactusCollisions(SnakePlayer me) {
+            Vector3f h = me.getHeadPos();
+            for (CactusData cd : cacti) {
+                if (cd.hit) {
+                    // Фрагменты уже есть — проверяем прилипание к телу
+                    for (int fi = cd.fragments.size()-1; fi >= 0; fi--) {
+                        Geometry frag = cd.fragments.get(fi);
+                        if (me.bodyContains(frag.getWorldTranslation(), 1.2f)) {
+                            // Прилипаем: убираем физику, прикрепляем к голове как сегмент
+                            RigidBodyControl fp = frag.getControl(RigidBodyControl.class);
+                            if (fp != null) { bulletAppState.getPhysicsSpace().remove(fp); frag.removeControl(fp); }
+                            me.grow(assetManager);
+                            wallNode.detachChild(frag);
+                            cd.fragments.remove(fi);
+                            if (!solo) sendNet("CACT_STICK|" + cd.origX + "|" + cd.origZ);
+                        }
+                    }
+                    continue;
+                }
+                // Ствол не сбит: проверяем удар головой
+                Vector3f cpos = cd.geo.getWorldTranslation();
+                if (h.distance(cpos) < 1.2f) {
+                    cd.hit = true;
+                    // Применяем импульс в направлении движения
+                    Vector3f impulse = me.getDirection().mult(25f).addLocal(0, 5f, 0);
+                    cd.phy.applyImpulse(impulse, Vector3f.ZERO);
+                    // Создаём 3-4 обломка
+                    Material fragMat = unshaded(assetManager, new ColorRGBA(0.18f,0.52f,0.15f,1f));
+                    for (int fi = 0; fi < 3; fi++) {
+                        float fsize = 0.15f + FastMath.nextRandomFloat() * 0.2f;
+                        Geometry frag = new Geometry("CactFrag"+fi, new Box(fsize,fsize,fsize));
+                        frag.setMaterial(fragMat);
+                        frag.setLocalTranslation(cpos.add(
+                                (FastMath.nextRandomFloat()-0.5f)*0.5f,
+                                FastMath.nextRandomFloat()*0.8f,
+                                (FastMath.nextRandomFloat()-0.5f)*0.5f));
+                        wallNode.attachChild(frag);
+                        RigidBodyControl fp = new RigidBodyControl(
+                                new BoxCollisionShape(new Vector3f(fsize,fsize,fsize)), 0.5f);
+                        fp.setLinearVelocity(new Vector3f(
+                                (FastMath.nextRandomFloat()-0.5f)*6f, 2f+FastMath.nextRandomFloat()*3f,
+                                (FastMath.nextRandomFloat()-0.5f)*6f));
+                        frag.addControl(fp); bulletAppState.getPhysicsSpace().add(fp);
+                        cd.fragments.add(frag);
+                    }
+                    if (!solo) sendNet("CACT_HIT|" + cd.origX + "|" + cd.origZ);
+                }
+            }
         }
 
         private void checkFoodFor(SnakePlayer snake) {
@@ -2591,6 +3634,21 @@ public class SnakeApp extends SimpleApplication {
             }
         }
 
+        private void updateDashHUD() {
+            if (dashCooldownText == null) return;
+            if (dashTimer > 0f) {
+                dashCooldownText.setText("⚡ РЫВОК АКТИВЕН ⚡");
+                dashCooldownText.setColor(new ColorRGBA(1f,0.9f,0.1f,1f));
+            } else if (dashCooldown > 0f) {
+                int pct = (int)(dashCooldown / DASH_COOLDOWN_MAX * 100);
+                dashCooldownText.setText("РЫВОК: " + pct + "% [SHIFT]");
+                dashCooldownText.setColor(TEXT_DIM);
+            } else {
+                dashCooldownText.setText("РЫВОК: ГОТОВ [SHIFT]");
+                dashCooldownText.setColor(ACCENT2);
+            }
+        }
+
         private void updateCamera() {
             SnakePlayer target;
             if (spectating) target = snakes.get(spectateTarget);
@@ -2631,6 +3689,7 @@ public class SnakeApp extends SimpleApplication {
             blackCubes.clear();
             rootNode.detachAllChildren(); guiNode.detachAllChildren();
             inputManager.clearMappings();
+            inputManager.setCursorVisible(true);  // Fix #1: восстанавливаем курсор при выходе в меню
             stateManager.detach(bulletAppState); stateManager.detach(this);
             stateManager.attach(new MainMenuState());
         }
@@ -2644,13 +3703,26 @@ public class SnakeApp extends SimpleApplication {
 
         // ── Вспомогательные классы ────────────────────────────────────────
         static class BlackCube {
-            final int id; final Geometry geo; final RigidBodyControl phy;
+            final int id; final Geometry geo; RigidBodyControl phy;
             boolean active = true;
             float glitchTimer=0f, impulseTimer=0.5f, rollSoundTimer=0f;
             boolean chasing = false;
             float patrolAngle=(float)(Math.random()*Math.PI*2), patrolChangeTimer=0f;
             final Map<Integer,Float> hitCooldowns = new HashMap<>();
+            int biteCount = 0; // количество укусов — куб растёт и замедляется
             BlackCube(int id, Geometry geo, RigidBodyControl phy) { this.id=id; this.geo=geo; this.phy=phy; }
+            void updatePhy(RigidBodyControl newPhy) { this.phy = newPhy; } // Fix #4
+        }
+
+        // Fix #2: Данные кактуса
+        static class CactusData {
+            final Geometry geo; final RigidBodyControl phy;
+            final float origX, origZ;
+            boolean hit = false;
+            final List<Geometry> fragments = new ArrayList<>();
+            CactusData(Geometry g, RigidBodyControl p, float x, float z) {
+                geo=g; phy=p; origX=x; origZ=z;
+            }
         }
 
         static class FoodItem {
@@ -2831,6 +3903,21 @@ public class SnakeApp extends SimpleApplication {
             com.jme3.bullet.control.RigidBodyControl phy=seg.getControl(com.jme3.bullet.control.RigidBodyControl.class);
             if (phy!=null&&physicsSpace!=null) { phy.setEnabled(false); physicsSpace.remove(phy); }
             parentNode.detachChild(seg); segments.remove(idx); segPos.remove(idx);
+        }
+
+
+        public void removeSegmentsAtWorldPos(Vector3f worldPos, float radius) {
+            if (dead || segments.size() <= 2) return;
+            for (int i = segments.size() - 1; i >= 1; i--) {
+                if (segPos.get(i).distance(worldPos) < radius) {
+                    Geometry seg = segments.get(i);
+                    com.jme3.bullet.control.RigidBodyControl phy = seg.getControl(com.jme3.bullet.control.RigidBodyControl.class);
+                    if (phy != null && physicsSpace != null) { phy.setEnabled(false); physicsSpace.remove(phy); }
+                    parentNode.detachChild(seg);
+                    segments.remove(i);
+                    segPos.remove(i);
+                }
+            }
         }
 
         public boolean selfCollides(float minDist) {
