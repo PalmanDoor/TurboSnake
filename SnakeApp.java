@@ -1405,9 +1405,8 @@ public class SnakeApp extends SimpleApplication {
             DatagramSocket gameSocket = this.socket;
             this.socket = null;
             app.getStateManager().detach(this);
-            // Fix #14: через LoadingState — экран загрузки вместо чёрного экрана
             app.getStateManager().attach(
-                    new LoadingState(myNick, playerList, myIdx, isSolo || playerList.size()==1,
+                    new GameState(myNick, playerList, myIdx, isSolo || playerList.size()==1,
                             isHost, gameSocket, hostAddress, hostPort, clients, selectedMap, cubesEnabled));
         }
 
@@ -1615,11 +1614,7 @@ public class SnakeApp extends SimpleApplication {
         private static final int   MAX_BLACK_CUBES   = 5;
         private static final int   CUBE_SHRINK_AMOUNT = 6;
 
-        // Музыка
-        private final AudioNode[] themeMusic = new AudioNode[4];
-        private int currentTrack = 0;
-        private float trackTimer = 0f;
-        private static final float TRACK_CHECK_INTERVAL = 1f;
+        // Игровые треки отключены: используется только меню-музыка через MusicManager
 
         // Звуки
         private final AudioNode[] eatSounds = new AudioNode[4];
@@ -1676,6 +1671,12 @@ public class SnakeApp extends SimpleApplication {
         private final Random eventRng = new Random();
         private Node rainDropNode;
         private final List<RainDrop> rainDrops = new ArrayList<>();
+        private DirectionalLight sunLight;
+        private AmbientLight ambientLight;
+        private Geometry sunBody;
+        private float dayNightTimer = 0f;
+        private static final float DAY_DURATION = 300f;
+        private static final float NIGHT_DURATION = 300f;
         // Вода на полу
         private final List<WaterPuddle> waterPuddles = new ArrayList<>();
         private Node waterNode;
@@ -1763,6 +1764,7 @@ public class SnakeApp extends SimpleApplication {
             buildOuterWorld();
             buildArena();
             buildClouds();
+            applyShadowModes(rootNode);
             createSnakes();
             spawnFood(MAX_FOOD);
             if (cubesEnabled) spawnInitialCubes(); // Fix #13
@@ -1898,8 +1900,6 @@ public class SnakeApp extends SimpleApplication {
         private void restartGame() {
             netRunning.set(false);
             if (socket != null) socket.close();
-            // Fix #7: полностью останавливаем музыку перед рестартом
-            for (AudioNode t : themeMusic) if (t != null) { t.stop(); rootNode.detachChild(t); }
             if (rainSound != null) { rainSound.stop(); rootNode.detachChild(rainSound); rainSound = null; }
             for (SnakePlayer sp : snakes) sp.cleanup(guiNode);
             for (BlackCube bc : blackCubes) {
@@ -1915,25 +1915,24 @@ public class SnakeApp extends SimpleApplication {
 
         // ── Свет ──────────────────────────────────────────────────────────
         private void setupLights() {
-            DirectionalLight sun = new DirectionalLight();
-            sun.setDirection(new Vector3f(-0.5f,-1f,-0.3f).normalizeLocal());
-            if (mapIndex == 2) sun.setColor(new ColorRGBA(0.6f,0.5f,0.8f,1f));
-            else sun.setColor(new ColorRGBA(1f,0.98f,0.9f,1f));
-            rootNode.addLight(sun);
+            sunLight = new DirectionalLight();
+            sunLight.setDirection(new Vector3f(-0.5f,-1f,-0.3f).normalizeLocal());
+            sunLight.setColor(new ColorRGBA(1f,0.98f,0.9f,1f));
+            rootNode.addLight(sunLight);
 
-            AmbientLight amb = new AmbientLight();
-            amb.setColor(new ColorRGBA(0.35f,0.37f,0.45f,1f));
-            rootNode.addLight(amb);
+            ambientLight = new AmbientLight();
+            ambientLight.setColor(new ColorRGBA(0.35f,0.37f,0.45f,1f));
+            rootNode.addLight(ambientLight);
 
             // Fix #5: Солнце/луна как визуальный объект
             if (mapIndex != 2) {
                 // Солнце
-                Geometry sunGeo = new Geometry("Sun", new com.jme3.scene.shape.Sphere(12,16,4.5f));
+                sunBody = new Geometry("Sun", new com.jme3.scene.shape.Sphere(12,16,4.5f));
                 Material sunMat = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
                 sunMat.setColor("Color", new ColorRGBA(1f,0.98f,0.75f,1f));
-                sunGeo.setMaterial(sunMat);
-                sunGeo.setLocalTranslation(-80f, 65f, -80f);
-                rootNode.attachChild(sunGeo);
+                sunBody.setMaterial(sunMat);
+                sunBody.setLocalTranslation(-80f, 65f, -80f);
+                rootNode.attachChild(sunBody);
                 // Ореол вокруг солнца
                 Geometry sunHalo = new Geometry("SunHalo", new com.jme3.scene.shape.Sphere(8,12,7f));
                 Material haloMat = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
@@ -1957,12 +1956,20 @@ public class SnakeApp extends SimpleApplication {
                 try {
                     com.jme3.shadow.DirectionalLightShadowRenderer dlsr =
                             new com.jme3.shadow.DirectionalLightShadowRenderer(assetManager, 1024, 2);
-                    dlsr.setLight(sun);
+                    dlsr.setLight(sunLight);
                     dlsr.setShadowIntensity(0.45f);
                     app.getViewPort().addProcessor(dlsr);
                 } catch (Exception e) {
                     System.out.println("[GFX] Shadows not available: " + e.getMessage());
                 }
+            }
+        }
+
+        private void applyShadowModes(Spatial spatial) {
+            if (!graphicsShadows || spatial == null) return;
+            spatial.setShadowMode(com.jme3.renderer.queue.RenderQueue.ShadowMode.CastAndReceive);
+            if (spatial instanceof Node) {
+                for (Spatial child : ((Node) spatial).getChildren()) applyShadowModes(child);
             }
         }
 
@@ -2647,34 +2654,7 @@ public class SnakeApp extends SimpleApplication {
             chitSound   = tryAudio("Sounds/chit.ogg");
             cubeRollSound = tryAudio("Sounds/cube_move.ogg");
             if (startSound!=null) startSound.play();
-            loadThemeMusic();
-        }
-
-        private void loadThemeMusic() {
-            String[] tracks = {"Sounds/theme/main1.ogg","Sounds/theme/main2.ogg","Sounds/theme/main3.ogg","Sounds/theme/main4.ogg"};
-            for (int i=0;i<tracks.length;i++) {
-                try {
-                    themeMusic[i] = new AudioNode(assetManager, tracks[i], DataType.Buffer);
-                    themeMusic[i].setPositional(false); themeMusic[i].setLooping(false);
-                    themeMusic[i].setVolume(musicVolume); rootNode.attachChild(themeMusic[i]);
-                } catch (Exception e) {}
-            }
-            playCurrentTrack();
-        }
-
-        private void playCurrentTrack() {
-            if (themeMusic[currentTrack]!=null) { themeMusic[currentTrack].setVolume(musicVolume); themeMusic[currentTrack].play(); trackTimer=0f; }
-        }
-
-        private void updateMusic(float tpf) {
-            trackTimer += tpf;
-            if (trackTimer>TRACK_CHECK_INTERVAL) {
-                trackTimer=0f;
-                AudioNode cur = themeMusic[currentTrack];
-                if (cur!=null && cur.getStatus()==AudioSource.Status.Stopped) {
-                    currentTrack=(currentTrack+1)%themeMusic.length; playCurrentTrack();
-                }
-            }
+            // Игровые фоновые треки отключены, чтобы музыка не накладывалась.
         }
 
         private AudioNode tryAudio(String path) {
@@ -3320,7 +3300,7 @@ public class SnakeApp extends SimpleApplication {
             // Пауза — замораживаем всё
             if (pauseActive) return;
 
-            updateMusic(tpf);
+            updateDayNightCycle(tpf);
             moveClouds(tpf);
             gameTime += tpf;
 
@@ -3698,7 +3678,6 @@ public class SnakeApp extends SimpleApplication {
         }
 
         private void backToMenu() {
-            for (AudioNode t:themeMusic) if (t!=null) t.stop();
             if (rainSound!=null) { rainSound.stop(); rootNode.detachChild(rainSound); }
             netRunning.set(false);
             if (socket!=null) socket.close();
@@ -3750,6 +3729,21 @@ public class SnakeApp extends SimpleApplication {
             FoodItem(Geometry g, boolean b, int id, boolean debris) { geo=g; bad=b; this.id=id; isDebris=debris; }
         }
 
+
+        private void updateDayNightCycle(float tpf) {
+            if (sunLight == null || ambientLight == null) return;
+            dayNightTimer += tpf;
+            float fullCycle = DAY_DURATION + NIGHT_DURATION;
+            if (dayNightTimer > fullCycle) dayNightTimer -= fullCycle;
+            float phase = dayNightTimer / fullCycle;
+            float sunAngle = phase * FastMath.TWO_PI;
+            Vector3f dir = new Vector3f(FastMath.cos(sunAngle), -0.15f - FastMath.sin(sunAngle), FastMath.sin(sunAngle)).normalizeLocal();
+            sunLight.setDirection(dir);
+            float daylight = FastMath.clamp((FastMath.sin(sunAngle) + 0.15f) * 0.9f, 0f, 1f);
+            ambientLight.setColor(new ColorRGBA(0.10f,0.12f,0.20f,1f).interpolateLocal(new ColorRGBA(0.38f,0.40f,0.46f,1f), daylight));
+            sunLight.setColor(new ColorRGBA(0.2f,0.25f,0.45f,1f).interpolateLocal(new ColorRGBA(1f,0.97f,0.86f,1f), daylight));
+            if (sunBody != null) sunBody.setLocalTranslation(-dir.x * 120f, 40f - dir.y * 80f, -dir.z * 120f);
+        }
         static class RainBall {
             final Geometry geo;
             float lifeTimer;
