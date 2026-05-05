@@ -1633,6 +1633,9 @@ public class SnakeApp extends SimpleApplication {
 
         private final List<FoodItem> foodItems = new ArrayList<>();
 
+				// счётчик ID для шариков
+				private int ballIdCounter = 0;
+
         // Враги-кубы
         private final List<BlackCube> blackCubes = new ArrayList<>();
         private int cubeIdCounter = 0;
@@ -1673,6 +1676,16 @@ public class SnakeApp extends SimpleApplication {
 
         // Таймер игры (для ивентов)
         private float gameTime = 0f;
+
+        // Пустыня
+				private FogFilter fogFilter;
+				private float defaultFogDistance = 80f;
+				private float defaultFogDensity = 0.004f;
+				private ColorRGBA defaultFogColor = new ColorRGBA(0.55f, 0.72f, 0.88f, 1f);
+				
+				private boolean sandstormActive = false;
+				private float sandstormTimer = 0f;
+				private static final float SANDSTORM_DURATION = 30f;
 
         // ── ИВЕНТ 1: Шариковый дождь ─────────────────────────────────────
         private boolean ballRainActive = false;
@@ -1839,11 +1852,11 @@ public class SnakeApp extends SimpleApplication {
 
             setupLights(); setupPhysics();
 						fpp = new FilterPostProcessor(assetManager);
-						FogFilter fog = new FogFilter();
-						fog.setFogColor(new ColorRGBA(0.55f, 0.72f, 0.88f, 1f));
-						fog.setFogDistance(80f);
-						fog.setFogDensity(0.004f);
-						fpp.addFilter(fog);
+						fogFilter = new FogFilter();
+						fogFilter.setFogColor(defaultFogColor);
+						fogFilter.setFogDistance(defaultFogDistance);
+						fogFilter.setFogDensity(defaultFogDensity);
+						fpp.addFilter(fogFilter);
 						app.getViewPort().addProcessor(fpp);
             buildOuterWorld();
             buildArena();
@@ -1860,6 +1873,11 @@ public class SnakeApp extends SimpleApplication {
             setupControls();
             loadSounds();
             if (!solo) initNetwork();
+						
+						// Синхронизация ям на карте 2
+						if (mapIndex == 2 && isHost) {
+								broadcastPitsState();
+						}
 
             rainBallNode = new Node("RainBalls"); rootNode.attachChild(rainBallNode);
             rainDropNode = new Node("RainDrops"); rootNode.attachChild(rainDropNode);
@@ -2164,6 +2182,83 @@ public class SnakeApp extends SimpleApplication {
                 }
             }
         }
+				
+				// GameState наст-щик доп сюда новые методы
+				private void sendPause(boolean pause) {
+						if (!solo && isHost) {
+								sendNet(pause ? "PAUSE" : "UNPAUSE");
+						}
+				}
+
+				private void broadcastPitsState() {
+						if (!isHost || solo || pits.isEmpty()) return;
+						StringBuilder sb = new StringBuilder("PITS_INIT");
+						for (int i = 0; i < pits.size(); i++) {
+								PitData p = pits.get(i);
+								sb.append("|").append(i).append("=").append(p.state.ordinal()).append("=").append(p.stateTimer);
+						}
+						sendNet(sb.toString());
+				}
+
+				private void updateCactusRespawns(float tpf) {
+						if (mapIndex != 1) return;
+						if (!solo && !isHost) return;   // только хост управляет респавном
+						for (CactusData cd : new ArrayList<>(cacti)) {
+								if (cd.queuedForRespawn) {
+										cd.respawnTimer -= tpf;
+										if (cd.respawnTimer <= 0f) {
+												// Удаляем старые обломки и колючки (если ещё остались)
+												for (Geometry frag : cd.fragments) {
+														Spatial parent = frag.getParent();
+														if (parent != null) parent.removeFromParent();
+												}
+												cd.fragments.clear();
+												cd.fragmentTimers.clear();
+												for (Geometry spine : cd.spines) {
+														if (spine.getParent() != null) spine.removeFromParent();
+												}
+												cd.spines.clear();
+												// Создаём новый кактус на случайном месте
+												float cx, cz;
+												do {
+														cx = (FastMath.nextRandomFloat() - 0.5f) * (mapHalf * 2f - 8f);
+														cz = (FastMath.nextRandomFloat() - 0.5f) * (mapHalf * 2f - 8f);
+												} while (Math.abs(cx) < 6f && Math.abs(cz) < 6f);
+												Material cactMat  = unshaded(assetManager, new ColorRGBA(0.18f,0.52f,0.15f,1f));
+												Material spineMat = unshaded(assetManager, new ColorRGBA(0.85f,0.82f,0.65f,1f));
+												spawnCactusAt(bulletAppState.getPhysicsSpace(), cactMat, spineMat, cx, cz);
+												cd.queuedForRespawn = false;
+												if (!solo) sendNet("CACT_RESPAWN|" + cx + "|" + cz);
+										}
+								}
+						}
+				}
+
+				private void startSandstormEvent() {
+						if (sandstormActive) return;
+						sandstormActive = true;
+						sandstormTimer = SANDSTORM_DURATION;
+						showCenter("🌪 ПЕСЧАНАЯ БУРЯ! Видимость упала!", new ColorRGBA(0.9f,0.8f,0.4f,1f));
+						if (!solo) sendNet("EVENT_SANDSTORM");
+						// Устанавливаем сильный туман
+						fogFilter.setFogDistance(25f);
+						fogFilter.setFogDensity(0.03f);
+						fogFilter.setFogColor(new ColorRGBA(0.76f, 0.70f, 0.50f, 1f));
+				}
+
+				private void updateSandstorm(float tpf) {
+						if (!sandstormActive) return;
+						sandstormTimer -= tpf;
+						if (sandstormTimer <= 0f) {
+								sandstormActive = false;
+								// Возвращаем обычный туман
+								fogFilter.setFogDistance(defaultFogDistance);
+								fogFilter.setFogDensity(defaultFogDensity);
+								fogFilter.setFogColor(defaultFogColor);
+								showCenter("Песчаная буря утихла.", new ColorRGBA(0.7f,0.8f,1f,1f));
+								if (solo || isHost) nextEventTimer = 25f + eventRng.nextFloat() * 45f;
+						}
+				}
 
         // ── Арена ─────────────────────────────────────────────────────────
         private void buildArena() {
@@ -2374,63 +2469,66 @@ public class SnakeApp extends SimpleApplication {
 						}
 				}
 
+				private void spawnCactusAt(PhysicsSpace space, Material cactMat, Material spineMat, float cx, float cz) {
+						float cactH = 1.6f + FastMath.nextRandomFloat() * 1.4f;
+
+						Box trunkBox = new Box(0.28f, cactH/2f, 0.28f);
+						Geometry trunk = new Geometry("CactI"+cacti.size(), trunkBox);
+						trunk.setMaterial(cactMat);
+						trunk.setLocalTranslation(cx, cactH/2f, cz);
+						wallNode.attachChild(trunk);
+
+						RigidBodyControl trunkPhy = new RigidBodyControl(
+										new BoxCollisionShape(new Vector3f(0.28f, cactH/2f, 0.28f)), 3.0f);
+						trunkPhy.setFriction(1.2f);
+						trunkPhy.setLinearDamping(0.5f);
+						trunkPhy.setAngularDamping(0.7f);
+						trunk.addControl(trunkPhy);
+						space.add(trunkPhy);
+
+						CactusData cd = new CactusData(trunk, trunkPhy, cx, cz);
+						cacti.add(cd);
+
+						// рука (ветка) – случайно
+						if (FastMath.nextRandomFloat() < 0.6f) {
+								float armSide = FastMath.nextRandomFloat() < 0.5f ? 0.5f : -0.5f;
+								Box armBox = new Box(0.35f, 0.18f, 0.18f);
+								Geometry arm = new Geometry("CactA"+cacti.size(), armBox);
+								arm.setMaterial(cactMat);
+								arm.setLocalTranslation(cx + armSide, cactH * 0.6f, cz);
+								wallNode.attachChild(arm);
+								cd.armGeo = arm;
+						}
+
+						// иголки
+						int spineCount = 6 + FastMath.nextRandomInt(0, 5);
+						for (int j = 0; j < spineCount; j++) {
+								float sa = FastMath.nextRandomFloat() * FastMath.TWO_PI;
+								float sy = FastMath.nextRandomFloat() * cactH;
+								float sd = 0.3f + FastMath.nextRandomFloat() * 0.2f;
+								Box spineBox = new Box(0.04f, 0.04f, sd);
+								Geometry spine = new Geometry("CactS"+cacti.size()+"_"+j, spineBox);
+								spine.setMaterial(spineMat);
+								spine.setLocalRotation(new Quaternion().fromAngleAxis(sa, Vector3f.UNIT_Y));
+								spine.setLocalTranslation(cx + FastMath.cos(sa)*0.3f, sy, cz + FastMath.sin(sa)*0.3f);
+								wallNode.attachChild(spine);
+								cd.spines.add(spine);
+						}
+				}
+
         /** Кактусы-препятствия внутри пустынной арены */
 				private void buildDesertCacti(PhysicsSpace space) {
 						Material cactMat  = unshaded(assetManager, new ColorRGBA(0.18f,0.52f,0.15f,1f));
 						Material spineMat = unshaded(assetManager, new ColorRGBA(0.85f,0.82f,0.65f,1f));
-						Random rng = new Random(77);
 						int cactusCount = 12;
 						for (int i = 0; i < cactusCount; i++) {
-								float angle = rng.nextFloat() * FastMath.TWO_PI;
-								float dist  = 8f + rng.nextFloat() * (mapHalf * 0.75f - 8f);
-								float cx = FastMath.cos(angle) * dist;
-								float cz = FastMath.sin(angle) * dist;
-								if (Math.abs(cx) < 6f && Math.abs(cz) < 6f) continue;
-
-								float cactH = 1.6f + rng.nextFloat() * 1.4f;
-
-								// Ствол
-								Box trunkBox = new Box(0.28f, cactH/2f, 0.28f);
-								Geometry trunk = new Geometry("CactI"+i, trunkBox);
-								trunk.setMaterial(cactMat);
-								trunk.setLocalTranslation(cx, cactH/2f, cz);
-								wallNode.attachChild(trunk);
-								RigidBodyControl trunkPhy = new RigidBodyControl(
-												new BoxCollisionShape(new Vector3f(0.28f, cactH/2f, 0.28f)), 3.0f);
-								trunkPhy.setFriction(1.2f);
-								trunkPhy.setLinearDamping(0.5f);
-								trunkPhy.setAngularDamping(0.7f);
-								trunk.addControl(trunkPhy);
-								space.add(trunkPhy);
-
-								CactusData cd = new CactusData(trunk, trunkPhy, cx, cz);
-								cacti.add(cd);
-
-								// Рука (ветка)
-								if (rng.nextBoolean()) {
-										float armSide = rng.nextBoolean() ? 0.5f : -0.5f;
-										Box armBox = new Box(0.35f, 0.18f, 0.18f);
-										Geometry arm = new Geometry("CactA"+i, armBox);
-										arm.setMaterial(cactMat);
-										arm.setLocalTranslation(cx + armSide, cactH * 0.6f, cz);
-										wallNode.attachChild(arm);
-										cd.armGeo = arm;
-								}
-
-								// Иголки
-								int spineCount = 6 + rng.nextInt(5);
-								for (int j = 0; j < spineCount; j++) {
-										float sa = rng.nextFloat() * FastMath.TWO_PI;
-										float sy = rng.nextFloat() * cactH;
-										float sd = 0.3f + rng.nextFloat() * 0.2f;
-										Box spineBox = new Box(0.04f, 0.04f, sd);
-										Geometry spine = new Geometry("CactS"+i+"_"+j, spineBox);
-										spine.setMaterial(spineMat);
-										spine.setLocalRotation(new Quaternion().fromAngleAxis(sa, Vector3f.UNIT_Y));
-										spine.setLocalTranslation(cx + FastMath.cos(sa)*0.3f, sy, cz + FastMath.sin(sa)*0.3f);
-										wallNode.attachChild(spine);
-										cd.spines.add(spine);        // сохраняем — останутся после разрушения
-								}
+								// случайная позиция внутри арены, с отступом от центра и стен
+								float cx, cz;
+								do {
+										cx = (FastMath.nextRandomFloat() - 0.5f) * (mapHalf * 2f - 8f);
+										cz = (FastMath.nextRandomFloat() - 0.5f) * (mapHalf * 2f - 8f);
+								} while (Math.abs(cx) < 6f && Math.abs(cz) < 6f); // не слишком близко к центру
+								spawnCactusAt(space, cactMat, spineMat, cx, cz);
 						}
 				}
 
@@ -2845,18 +2943,33 @@ public class SnakeApp extends SimpleApplication {
             });
         }
 
-        private void togglePause() {
-            if (gameOver || gameoverUIActive) return;
-            if (!solo && !isHost) return; // мультиплеер: пауза только у хоста
-            pauseActive = !pauseActive;
-            inputManager.setCursorVisible(pauseActive);
-            if (pauseActive) {
-                if (pauseNode == null) buildPauseUI();
-                pauseNode.setCullHint(Spatial.CullHint.Inherit);
-            } else {
-                if (pauseNode != null) pauseNode.setCullHint(Spatial.CullHint.Always);
-            }
-        }
+				private void togglePause() {
+						if (gameOver || gameoverUIActive) return;
+						
+						if (solo || isHost) {
+								// Хост или соло – реальная пауза
+								pauseActive = !pauseActive;
+								sendPause(pauseActive);
+								inputManager.setCursorVisible(pauseActive);
+								if (pauseActive) {
+										if (pauseNode == null) buildPauseUI();
+										pauseNode.setCullHint(Spatial.CullHint.Inherit);
+								} else {
+										if (pauseNode != null) pauseNode.setCullHint(Spatial.CullHint.Always);
+								}
+						} else {
+								// Клиент – только показать/скрыть меню, не трогая pauseActive
+								boolean menuVisible = (pauseNode != null && pauseNode.getCullHint() != Spatial.CullHint.Always);
+								if (menuVisible) {
+										pauseNode.setCullHint(Spatial.CullHint.Always);
+										inputManager.setCursorVisible(false);
+								} else {
+										if (pauseNode == null) buildPauseUI();
+										pauseNode.setCullHint(Spatial.CullHint.Inherit);
+										inputManager.setCursorVisible(true);
+								}
+						}
+				}
 
         private void buildPauseUI() {
             float W = cam.getWidth(), H = cam.getHeight();
@@ -3065,6 +3178,16 @@ public class SnakeApp extends SimpleApplication {
                             pd.stateTimer = timer;
                         }
                     } break;
+								case "CACT_RESPAWN":
+										if (p.length >= 3) {
+												float cx = Float.parseFloat(p[1]);
+												float cz = Float.parseFloat(p[2]);
+												// Создаём кактус на клиенте
+												Material cactMat  = unshaded(assetManager, new ColorRGBA(0.18f,0.52f,0.15f,1f));
+												Material spineMat = unshaded(assetManager, new ColorRGBA(0.85f,0.82f,0.65f,1f));
+												spawnCactusAt(bulletAppState.getPhysicsSpace(), cactMat, spineMat, cx, cz);
+										}
+										break;
 								case "CACT_STICK":
 										if (p.length >= 5) {
 												int snakeIdx = Integer.parseInt(p[1]);
@@ -3097,6 +3220,41 @@ public class SnakeApp extends SimpleApplication {
 																}
 														}
 												}
+										}
+										break;
+								case "EVENT_SANDSTORM":
+										if (!sandstormActive) startSandstormEvent();
+										break;
+								case "PITS_INIT":
+										if (p.length > 1) {
+												for (int i = 1; i < p.length; i++) {
+														String[] parts = p[i].split("=");
+														if (parts.length >= 3) {
+																int idx = Integer.parseInt(parts[0]);
+																int stateOrd = Integer.parseInt(parts[1]);
+																float timer = Float.parseFloat(parts[2]);
+																if (idx >= 0 && idx < pits.size()) {
+																		PitData pit = pits.get(idx);
+																		pit.state = PitState.values()[stateOrd];
+																		pit.stateTimer = timer;
+																}
+														}
+												}
+										}
+										break;
+								case "PAUSE":
+										if (!isHost) {
+												pauseActive = true;
+												inputManager.setCursorVisible(true);
+												if (pauseNode == null) buildPauseUI();
+												pauseNode.setCullHint(Spatial.CullHint.Inherit);
+										}
+										break;
+								case "UNPAUSE":
+										if (!isHost) {
+												pauseActive = false;
+												inputManager.setCursorVisible(false);
+												if (pauseNode != null) pauseNode.setCullHint(Spatial.CullHint.Always);
 										}
 										break;
                 case "CHEAT_BORDERS":
@@ -3183,9 +3341,39 @@ public class SnakeApp extends SimpleApplication {
 												}
 										}
 										break;
-                case "BALL_SPAWN":
-                    if (p.length>=3) spawnRainBall(Float.parseFloat(p[1]), Float.parseFloat(p[2]));
-                    break;
+								case "BALL_SPAWN":
+										if (p.length >= 4) {
+												int ballId = Integer.parseInt(p[1]);
+												float bx = Float.parseFloat(p[2]);
+												float bz = Float.parseFloat(p[3]);
+
+												// Цвета такие же, как в spawnRainBall
+												ColorRGBA[] cols = {
+														new ColorRGBA(1f,0.2f,0.8f,1f), new ColorRGBA(0.2f,0.8f,1f,1f),
+														new ColorRGBA(1f,0.9f,0.1f,1f), new ColorRGBA(0.4f,1f,0.3f,1f)
+												};
+												ColorRGBA col = cols[FastMath.nextRandomInt(0, cols.length - 1)];
+												float r = 0.3f + FastMath.nextRandomFloat() * 0.3f;
+												Geometry geo = new Geometry("RainBall", new Sphere(8, 8, r));
+												geo.setMaterial(unshaded(assetManager, col));
+												geo.setLocalTranslation(bx, 20f + FastMath.nextRandomFloat() * 10f, bz);
+												rainBallNode.attachChild(geo);
+												rainBalls.add(new RainBall(geo, ballId, 4f + FastMath.nextRandomFloat() * 3f));
+										}
+										break;
+								case "BALL_COLLECT":
+										if (p.length >= 2) {
+												int ballId = Integer.parseInt(p[1]);
+												for (int i = rainBalls.size() - 1; i >= 0; i--) {
+														RainBall rb = rainBalls.get(i);
+														if (rb.id == ballId) {
+																rainBallNode.detachChild(rb.geo);
+																rainBalls.remove(i);
+																break;
+														}
+												}
+										}
+										break;
                 case "WATER":
                     if (p.length>=4) {
                         float wx=Float.parseFloat(p[1]),wz=Float.parseFloat(p[2]),wr=Float.parseFloat(p[3]);
@@ -3253,6 +3441,7 @@ public class SnakeApp extends SimpleApplication {
                         Vector3f pos = rb.geo.getLocalTranslation();
                         if (me.getHeadPos().distance(pos) < 1.5f) {
                             me.grow(assetManager); me.addScore(3); playEatSound();
+														if (!solo) sendNet("BALL_COLLECT|" + rb.id);
                             rainBallNode.detachChild(rb.geo); rainBalls.remove(i);
                         }
                     }
@@ -3286,22 +3475,25 @@ public class SnakeApp extends SimpleApplication {
             }
         }
 
-        private void spawnRainBall(float x, float z) {
-            ColorRGBA[] cols = {
-                    new ColorRGBA(1f,0.2f,0.8f,1f), new ColorRGBA(0.2f,0.8f,1f,1f),
-                    new ColorRGBA(1f,0.9f,0.1f,1f), new ColorRGBA(0.4f,1f,0.3f,1f)
-            };
-            ColorRGBA col = cols[FastMath.nextRandomInt(0,cols.length-1)];
-            float r = 0.3f + FastMath.nextRandomFloat()*0.3f;
-            Geometry geo = new Geometry("RainBall", new Sphere(8,8,r));
-            geo.setMaterial(unshaded(assetManager, col));
-            geo.setLocalTranslation(x, 20f + FastMath.nextRandomFloat()*10f, z);
-            rainBallNode.attachChild(geo);
-            rainBalls.add(new RainBall(geo, 4f + FastMath.nextRandomFloat()*3f));
-        }
+				private void spawnRainBall(float x, float z) {
+						ColorRGBA[] cols = {
+								new ColorRGBA(1f,0.2f,0.8f,1f), new ColorRGBA(0.2f,0.8f,1f,1f),
+								new ColorRGBA(1f,0.9f,0.1f,1f), new ColorRGBA(0.4f,1f,0.3f,1f)
+						};
+						ColorRGBA col = cols[FastMath.nextRandomInt(0, cols.length - 1)];
+						float r = 0.3f + FastMath.nextRandomFloat() * 0.3f;
+						Geometry geo = new Geometry("RainBall", new Sphere(8, 8, r));
+						geo.setMaterial(unshaded(assetManager, col));
+						geo.setLocalTranslation(x, 20f + FastMath.nextRandomFloat() * 10f, z);
+						rainBallNode.attachChild(geo);
+						int id = ballIdCounter++;
+						rainBalls.add(new RainBall(geo, id, 4f + FastMath.nextRandomFloat() * 3f));
+						if (!solo) sendNet("BALL_SPAWN|" + id + "|" + x + "|" + z);
+				}
 
         // ── Ивент 2: Дождь ────────────────────────────────────────────────
         private void startWeatherRainEvent() {
+					  if (mapIndex == 1) return;
             if (weatherRainActive) return;
             weatherRainActive = true; weatherRainTimer = WEATHER_RAIN_DURATION;
             showCenter("☔ ДОЖДЬ!", new ColorRGBA(0.5f,0.7f,1f,1f));
@@ -3465,18 +3657,33 @@ public class SnakeApp extends SimpleApplication {
         }
 
         // ── Кубы-враги ────────────────────────────────────────────────────
-        private void spawnInitialCubes() {
-            cubeNode = new Node("BlackCubes"); rootNode.attachChild(cubeNode);
-            if (solo || isHost) {
-                float[] xs = {-20f,20f,0f,-15f,15f};
-                float[] zs = {0f,0f,20f,15f,-15f};
-                for (int i=0;i<Math.min(MAX_BLACK_CUBES,xs.length);i++) {
-                    int id = cubeIdCounter++;
-                    spawnBlackCube(id, xs[i], zs[i]);
-                    if (!solo) sendNet("CUBE_SPAWN|"+id+"|"+xs[i]+"|"+zs[i]);
-                }
-            }
-        }
+				private void spawnInitialCubes() {
+						cubeNode = new Node("BlackCubes");
+						rootNode.attachChild(cubeNode);
+						if (solo || isHost) {
+								float cornerOffset = 5f;  // отступ от стен, чтобы куб не застрял в текстурах
+								float cx1 = -mapHalf + cornerOffset;   // левый
+								float cx2 =  mapHalf - cornerOffset;   // правый
+								float cz1 = -mapHalf + cornerOffset;   // ближний
+								float cz2 =  mapHalf - cornerOffset;   // дальний
+
+								float[][] cornerPositions = {
+										{cx1, cz1}, {cx2, cz1}, {cx1, cz2}, {cx2, cz2}
+								};
+
+								// Перемешиваем, чтобы кубы были в случайных углах
+								List<float[]> cornersList = new ArrayList<>(Arrays.asList(cornerPositions));
+								Collections.shuffle(cornersList, new Random());
+
+								int cubesToSpawn = Math.min(MAX_BLACK_CUBES, cornersList.size());
+								for (int i = 0; i < cubesToSpawn; i++) {
+										float[] pos = cornersList.get(i % cornersList.size());
+										int id = cubeIdCounter++;
+										spawnBlackCube(id, pos[0], pos[1]);
+										if (!solo) sendNet("CUBE_SPAWN|" + id + "|" + pos[0] + "|" + pos[1]);
+								}
+						}
+				}
 
         private void spawnBlackCube(int id, float x, float z) {
             for (BlackCube bc:blackCubes) if (bc.id==id) return;
@@ -3712,19 +3919,28 @@ public class SnakeApp extends SimpleApplication {
             gameTimerText.setText(String.format("%d:%02d", mins, secs));
 
             // Планировщик случайных ивентов (хост/соло) — повторяются каждые 2–5 мин
-            if ((solo || isHost) && !ballRainActive && !weatherRainActive && !frozenArenaActive && nextEventTimer > 0) {
-                nextEventTimer -= tpf;
-                if (nextEventTimer <= 0) {
-                    int evtChoice = eventRng.nextInt(3);
-                    if (evtChoice == 0) startBallRainEvent();
-                    else if (evtChoice == 1) startWeatherRainEvent();
-                    else startFrozenArenaEvent(); // Fix #12
-                }
-            }
+						if ((solo || isHost) && !ballRainActive && !weatherRainActive && !frozenArenaActive && !sandstormActive && nextEventTimer > 0) {
+								nextEventTimer -= tpf;
+								if (nextEventTimer <= 0) {
+										if (mapIndex == 1) {
+												// На пустыне: только шариковый дождь, ледяная арена и песчаная буря
+												int evt = eventRng.nextInt(3);
+												if (evt == 0) startBallRainEvent();
+												else if (evt == 1) startFrozenArenaEvent();
+												else startSandstormEvent();
+										} else {
+												int evtChoice = eventRng.nextInt(3);
+												if (evtChoice == 0) startBallRainEvent();
+												else if (evtChoice == 1) startWeatherRainEvent();
+												else startFrozenArenaEvent();
+										}
+								}
+						}
 
             updateBallRain(tpf);
             updateWeatherRain(tpf);
-            updateFrozenArena(tpf); // Fix #12
+            updateFrozenArena(tpf);
+						updateSandstorm(tpf);
 
             if (centerMsgTimer>0) {
                 centerMsgTimer -= tpf;
@@ -3797,6 +4013,7 @@ public class SnakeApp extends SimpleApplication {
 
             updateCamera(); updateHUD();
             for (SnakePlayer sp:snakes) sp.updateNameTag(cam);
+						updateCactusRespawns(tpf);
             updateBlackCubes(tpf);
         }
 
@@ -4013,6 +4230,9 @@ public class SnakeApp extends SimpleApplication {
 								Vector3f cpos = cd.trunkGeo.getWorldTranslation();
 								if (h.distance(cpos) < 1.2f) {
 										cd.hit = true;
+										
+										cd.respawnTimer = 60f;   // 15 секунд до восстановления
+										cd.queuedForRespawn = true;
 
 										// Убираем ствол и руку (физику тоже)
 										// Убираем ствол и руку (физику тоже)
@@ -4213,6 +4433,8 @@ public class SnakeApp extends SimpleApplication {
 						Geometry armGeo;                   // может быть null
 						final List<Geometry> spines = new ArrayList<>(); // колючки на месте
 						final float origX, origZ;
+						float respawnTimer = 0f;
+						boolean queuedForRespawn = false;
 						boolean hit = false;
 						final List<Geometry> fragments = new ArrayList<>();
 						final List<Float> fragmentTimers = new ArrayList<>();
@@ -4246,13 +4468,18 @@ public class SnakeApp extends SimpleApplication {
             sunLight.setColor(new ColorRGBA(0.2f,0.25f,0.45f,1f).interpolateLocal(new ColorRGBA(1f,0.97f,0.86f,1f), daylight));
             if (sunBody != null) sunBody.setLocalTranslation(-dir.x * 120f, 40f - dir.y * 80f, -dir.z * 120f);
         }
-        static class RainBall {
-            final Geometry geo;
-            float lifeTimer;
-            boolean landed = false;
-            float landedTimer = 0f;
-            RainBall(Geometry g, float life) { geo=g; lifeTimer=life; }
-        }
+				static class RainBall {
+						final Geometry geo;
+						final int id;          // уникальный ID шарика
+						float lifeTimer;
+						boolean landed = false;
+						float landedTimer = 0f;
+						RainBall(Geometry g, int id, float life) { 
+								this.geo = g; 
+								this.id = id;
+								this.lifeTimer = life; 
+						}
+				}
 
         static class RainDrop {
             final Geometry geo; float lifeTimer;
