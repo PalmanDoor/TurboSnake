@@ -46,8 +46,8 @@ public class SnakeApp extends SimpleApplication {
     static int selectedMap = 0;
     static ColorRGBA selectedSnakeColor = new ColorRGBA(0.15f, 0.9f, 0.3f, 1f);
     static String savedNickname = getSystemUsername();
-    // Fix #5: Настройки графики
-    static boolean graphicsShadows     = true;
+    // Настройки графики
+    static int graphicsShadowQuality = 0; // 0 Низкие, 1 Средние, 2 Высокие, 3 Ультра
     static boolean graphicsReflections = false; // тяжёлое — отключено по умолчанию
 
     // =========================================================================
@@ -70,11 +70,9 @@ public class SnakeApp extends SimpleApplication {
             effectVolume       = Float.parseFloat(p.getProperty("effectVolume", "1.0"));
             musicVolume        = Float.parseFloat(p.getProperty("musicVolume",  "0.5"));
             savedNickname      = p.getProperty("nickname", getSystemUsername());
-            float r = Float.parseFloat(p.getProperty("snakeColorR", "0.15"));
-            float g = Float.parseFloat(p.getProperty("snakeColorG", "0.9"));
-            float b = Float.parseFloat(p.getProperty("snakeColorB", "0.3"));
-            selectedSnakeColor = new ColorRGBA(r, g, b, 1f);
-            graphicsShadows     = Boolean.parseBoolean(p.getProperty("shadows",     "true")); // Fix #5
+            graphicsShadowQuality = Integer.parseInt(p.getProperty("shadowQuality", "0"));
+            if (graphicsShadowQuality < 0) graphicsShadowQuality = 0;
+            if (graphicsShadowQuality > 3) graphicsShadowQuality = 3;
             graphicsReflections = Boolean.parseBoolean(p.getProperty("reflections", "false"));
         } catch (Exception e) { System.out.println("[Settings] Load error: " + e.getMessage()); }
     }
@@ -85,10 +83,7 @@ public class SnakeApp extends SimpleApplication {
             p.setProperty("effectVolume",  String.valueOf(effectVolume));
             p.setProperty("musicVolume",   String.valueOf(musicVolume));
             p.setProperty("nickname",      nickname != null ? nickname : savedNickname);
-            p.setProperty("snakeColorR",   String.valueOf(selectedSnakeColor.r));
-            p.setProperty("snakeColorG",   String.valueOf(selectedSnakeColor.g));
-            p.setProperty("snakeColorB",   String.valueOf(selectedSnakeColor.b));
-            p.setProperty("shadows",       String.valueOf(graphicsShadows));     // Fix #5
+            p.setProperty("shadowQuality", String.valueOf(graphicsShadowQuality));
             p.setProperty("reflections",   String.valueOf(graphicsReflections)); // Fix #5
             p.store(out, "SSnake3D Settings");
         } catch (Exception e) { System.out.println("[Settings] Save error: " + e.getMessage()); }
@@ -562,61 +557,29 @@ public class SnakeApp extends SimpleApplication {
             settingsClose = new MenuButton("ЗАКРЫТЬ", cx, cy-138f, 180, 44,
                     BTN_NORMAL, BTN_HOVER, BTN_PRESS, DANGER, assetManager, settingsPanel, Z);
 
-            // ── Цвет змейки (Fix #6: HSV-градиентный пикер) ────────────────
-            BitmapText colorLabel = new BitmapText(font);
-            colorLabel.setSize(14); colorLabel.setText("ЦВЕТ ЗМЕЙКИ");
-            colorLabel.setColor(TEXT_DIM);
-            // Fix #6: опустить метку ниже чтобы не перекрывалась с предыдущими элементами
-            colorLabel.setLocalTranslation(cx-155, cy-100f, Z);
-            settingsPanel.attachChild(colorLabel);
+            BitmapText tabMain = new BitmapText(font);
+            tabMain.setSize(14); tabMain.setName("SettingsTabMain");
+            tabMain.setText("▶ Основная");
+            tabMain.setColor(ACCENT2);
+            tabMain.setLocalTranslation(cx-155, cy+188f, Z);
+            settingsPanel.attachChild(tabMain);
+            BitmapText tabGfx = new BitmapText(font);
+            tabGfx.setSize(14); tabGfx.setName("SettingsTabGfx");
+            tabGfx.setText("Графика");
+            tabGfx.setColor(TEXT_DIM);
+            tabGfx.setLocalTranslation(cx-10, cy+188f, Z);
+            settingsPanel.attachChild(tabGfx);
 
-            // Образец выбранного цвета
-            Box colorPreviewBox = new Box(18f, 12f, 0.5f);
-            Geometry colorPreview = new Geometry("ColorPreview", colorPreviewBox);
-            colorPreview.setMaterial(unshaded(assetManager, selectedSnakeColor));
-            colorPreview.setLocalTranslation(cx + 130f, cy - 118f, Z);
-            settingsPanel.attachChild(colorPreview);
-
-            // Fix #6: HSV-пикер через 16 ячеек радуги + 4 яркости (4x4 = 16 свотчей)
-            float swX0 = cx - 150f, swY0 = cy - 123f, swW = 18f, swH = 10f, swGap = 2f;
-            float[] hues = {0f, 30f, 60f, 90f, 120f, 150f, 180f, 210f, 240f, 270f, 300f, 330f};
-            for (int ci = 0; ci < hues.length; ci++) {
-                float hue = hues[ci] / 360f;
-                float r2 = hsvR(hue, 0.85f, 0.9f);
-                float g2 = hsvG(hue, 0.85f, 0.9f);
-                float b2 = hsvB(hue, 0.85f, 0.9f);
-                Box swatchBox = new Box(swW/2f, swH/2f, 0.5f);
-                Geometry swatch = new Geometry("SwatchH"+ci, swatchBox);
-                swatch.setMaterial(unshaded(assetManager, new ColorRGBA(r2, g2, b2, 1f)));
-                swatch.setLocalTranslation(swX0 + ci * (swW + swGap), swY0, Z);
-                settingsPanel.attachChild(swatch);
-            }
-            // Ряд пастельных / тёмных
-            float[] hues2 = {0f, 60f, 120f, 180f, 240f, 300f, 30f, 90f, 150f, 210f, 270f, 330f};
-            for (int ci = 0; ci < hues2.length; ci++) {
-                float hue = hues2[ci] / 360f;
-                float r2 = hsvR(hue, 0.5f, 1.0f);
-                float g2 = hsvG(hue, 0.5f, 1.0f);
-                float b2 = hsvB(hue, 0.5f, 1.0f);
-                Box swatchBox = new Box(swW/2f, swH/2f, 0.5f);
-                Geometry swatch = new Geometry("SwatchP"+ci, swatchBox);
-                swatch.setMaterial(unshaded(assetManager, new ColorRGBA(r2, g2, b2, 1f)));
-                swatch.setLocalTranslation(swX0 + ci * (swW + swGap), swY0 - swH - swGap, Z);
-                settingsPanel.attachChild(swatch);
-            }
-
-            // Fix #5: Кнопки настроек графики
+            // Настройки графики (вкладка "Графика")
             BitmapText gfxLabel = new BitmapText(font);
-            gfxLabel.setSize(13); gfxLabel.setText("ГРАФИКА:");
+            gfxLabel.setSize(13); gfxLabel.setName("GraphicsLabel"); gfxLabel.setText("ГРАФИКА:");
             gfxLabel.setColor(TEXT_DIM);
             gfxLabel.setLocalTranslation(cx-155, cy-152f, Z);
             settingsPanel.attachChild(gfxLabel);
-
-            // Тени — «кнопка-тумблер»
             BitmapText shadowsBtn = new BitmapText(font);
             shadowsBtn.setSize(13); shadowsBtn.setName("ShadowsBtn");
-            shadowsBtn.setText("Тени: " + (graphicsShadows ? "ВКЛ" : "ВЫКЛ"));
-            shadowsBtn.setColor(graphicsShadows ? ACCENT : TEXT_DIM);
+            shadowsBtn.setText("Тени: " + shadowQualityName());
+            shadowsBtn.setColor(ACCENT);
             shadowsBtn.setLocalTranslation(cx-155, cy-170f, Z);
             settingsPanel.attachChild(shadowsBtn);
 
@@ -632,6 +595,10 @@ public class SnakeApp extends SimpleApplication {
             if (sfxSlider   != null) sfxSlider.setValue(effectVolume);
             if (musicSlider != null) musicSlider.setValue(musicVolume);
             MusicManager.setVolume(musicVolume); // Fix #7
+        }
+        private String shadowQualityName() {
+            String[] q = {"Низкие", "Средние", "Высокие", "Ультра"};
+            return q[graphicsShadowQuality];
         }
 
         private void startMenuMusic() {
@@ -709,39 +676,15 @@ public class SnakeApp extends SimpleApplication {
                         } else if (musicSlider.onClick(mx, my)) {
                             musicVolume = musicSlider.getValue(); updateSettingsLabels();
                         } else {
-                            // Fix #6: Проверка кликов по HSV-свотчам
-                            float W2 = cam.getWidth(), H2 = cam.getHeight(), cx2 = W2/2f, cy2 = H2/2f;
-                            float swX0 = cx2 - 150f, swY0 = cy2 - 123f, swW = 18f, swH = 10f, swGap = 2f;
-                            float[] huesA = {0f,30f,60f,90f,120f,150f,180f,210f,240f,270f,300f,330f};
-                            float[] huesB = {0f,60f,120f,180f,240f,300f,30f,90f,150f,210f,270f,330f};
-                            boolean swatchHit = false;
-                            for (int ci = 0; ci < huesA.length; ci++) {
-                                float sx = swX0 + ci*(swW+swGap);
-                                if (mx>=sx-swW/2 && mx<=sx+swW/2 && my>=swY0-swH/2 && my<=swY0+swH/2) {
-                                    selectedSnakeColor = hsvToRGBA(huesA[ci]/360f, 0.85f, 0.9f);
-                                    swatchHit = true;
-                                }
-                                float sy2 = swY0 - swH - swGap;
-                                if (mx>=sx-swW/2 && mx<=sx+swW/2 && my>=sy2-swH/2 && my<=sy2+swH/2) {
-                                    selectedSnakeColor = hsvToRGBA(huesB[ci]/360f, 0.5f, 1.0f);
-                                    swatchHit = true;
-                                }
-                            }
-                            if (swatchHit) {
-                                Spatial preview = settingsPanel.getChild("ColorPreview");
-                                if (preview instanceof Geometry)
-                                    ((Geometry)preview).getMaterial().setColor("Color", selectedSnakeColor);
-                                saveSettings(nickname.toString());
-                            }
-                            // Fix #5: Клик по тумблеру теней
+                            // Клик по качеству теней
                             Spatial shadowBtn = settingsPanel.getChild("ShadowsBtn");
                             if (shadowBtn instanceof BitmapText) {
                                 float bx = shadowBtn.getLocalTranslation().x;
                                 float by = shadowBtn.getLocalTranslation().y;
-                                if (mx>=bx && mx<=bx+140f && my>=by-20f && my<=by+5f) {
-                                    graphicsShadows = !graphicsShadows;
-                                    ((BitmapText)shadowBtn).setText("Тени: " + (graphicsShadows ? "ВКЛ" : "ВЫКЛ"));
-                                    ((BitmapText)shadowBtn).setColor(graphicsShadows ? ACCENT : TEXT_DIM);
+                                if (mx>=bx && mx<=bx+180f && my>=by-20f && my<=by+5f) {
+                                    graphicsShadowQuality = (graphicsShadowQuality + 1) % 4;
+                                    ((BitmapText)shadowBtn).setText("Тени: " + shadowQualityName());
+                                    ((BitmapText)shadowBtn).setColor(ACCENT);
                                     saveSettings(nickname.toString());
                                 }
                             }
@@ -1951,13 +1894,15 @@ public class SnakeApp extends SimpleApplication {
                 rootNode.attachChild(moonGeo);
             }
 
-            // Fix #5: Тени (DirectionalLightShadowRenderer) если включены в настройках
-            if (graphicsShadows) {
+            // Тени по качеству
+            if (graphicsShadowQuality >= 0) {
                 try {
+                    int[] sizes = {512, 1024, 2048, 4096};
+                    int[] splits = {1, 2, 3, 4};
                     com.jme3.shadow.DirectionalLightShadowRenderer dlsr =
-                            new com.jme3.shadow.DirectionalLightShadowRenderer(assetManager, 1024, 2);
+                            new com.jme3.shadow.DirectionalLightShadowRenderer(assetManager, sizes[graphicsShadowQuality], splits[graphicsShadowQuality]);
                     dlsr.setLight(sunLight);
-                    dlsr.setShadowIntensity(0.45f);
+                    dlsr.setShadowIntensity(0.35f + graphicsShadowQuality * 0.12f);
                     app.getViewPort().addProcessor(dlsr);
                 } catch (Exception e) {
                     System.out.println("[GFX] Shadows not available: " + e.getMessage());
@@ -1966,7 +1911,7 @@ public class SnakeApp extends SimpleApplication {
         }
 
         private void applyShadowModes(Spatial spatial) {
-            if (!graphicsShadows || spatial == null) return;
+            if (spatial == null) return;
             spatial.setShadowMode(com.jme3.renderer.queue.RenderQueue.ShadowMode.CastAndReceive);
             if (spatial instanceof Node) {
                 for (Spatial child : ((Node) spatial).getChildren()) applyShadowModes(child);
@@ -2973,7 +2918,8 @@ public class SnakeApp extends SimpleApplication {
                 if (weatherRainActive) {
                     if (wp.size < wp.maxSize) {
                         wp.size = Math.min(wp.maxSize, wp.size + tpf * 0.3f);
-                        wp.geo.setLocalScale(wp.size, 0.02f, wp.size);
+                        float ripple = 1f + FastMath.sin((weatherRainTimer + wp.x * 0.4f + wp.z * 0.5f) * 4f) * 0.03f;
+                        wp.geo.setLocalScale(wp.size * 1.15f * ripple, 0.01f, wp.size * 0.85f / ripple);
                     }
                 } else {
                     wp.size -= tpf * 0.12f;
@@ -2982,9 +2928,9 @@ public class SnakeApp extends SimpleApplication {
                         waterPuddles.remove(i);
                         continue;
                     }
-                    wp.geo.setLocalScale(wp.size, 0.02f, wp.size);
+                    wp.geo.setLocalScale(wp.size * 1.15f, 0.01f, wp.size * 0.85f);
                     float alpha = Math.min(0.7f, wp.size / wp.maxSize * 0.7f);
-                    wp.geo.getMaterial().setColor("Color", new ColorRGBA(0.3f,0.5f,0.9f,alpha));
+                    wp.geo.getMaterial().setColor("Color", new ColorRGBA(0.16f,0.20f,0.24f,alpha));
                 }
 
                 if (myIndex < snakes.size() && !snakes.get(myIndex).isDead()) {
@@ -3008,10 +2954,13 @@ public class SnakeApp extends SimpleApplication {
             for (WaterPuddle wp : waterPuddles) {
                 if (Math.abs(wp.x-x)<2f && Math.abs(wp.z-z)<2f) return;
             }
-            Geometry geo = new Geometry("Puddle", new Box(1f, 0.02f, 1f));
-            geo.setMaterial(unshaded(assetManager, new ColorRGBA(0.3f,0.5f,0.9f,0.7f)));
-            geo.setLocalTranslation(x, -0.17f, z);
-            geo.setLocalScale(0.1f, 0.02f, 0.1f);
+            Geometry geo = new Geometry("Puddle", new Sphere(16,16,1f));
+            Material mat = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
+            mat.setColor("Color", new ColorRGBA(0.16f,0.20f,0.24f,0.58f));
+            mat.getAdditionalRenderState().setBlendMode(com.jme3.material.RenderState.BlendMode.Alpha);
+            geo.setMaterial(mat);
+            geo.setLocalTranslation(x, -0.15f, z);
+            geo.setLocalScale(0.12f, 0.008f, 0.09f);
             waterNode.attachChild(geo);
             waterPuddles.add(new WaterPuddle(geo, x, z, radius));
         }
@@ -3549,9 +3498,10 @@ public class SnakeApp extends SimpleApplication {
                         if (me.bodyContains(frag.getWorldTranslation(), 1.2f)) {
                             // Прилипаем: убираем физику, прикрепляем к голове как сегмент
                             RigidBodyControl fp = frag.getControl(RigidBodyControl.class);
+                            if (fp == null && frag.getParent() != null) fp = frag.getParent().getControl(RigidBodyControl.class);
                             if (fp != null) { bulletAppState.getPhysicsSpace().remove(fp); frag.removeControl(fp); }
-                            me.grow(assetManager);
-                            wallNode.detachChild(frag);
+                            frag.setLocalScale(1f, 1f, 1.2f);
+                            if (frag.getParent() != null) frag.getParent().removeFromParent();
                             cd.fragments.remove(fi);
                             if (!solo) sendNet("CACT_STICK|" + cd.origX + "|" + cd.origZ);
                         }
@@ -3565,12 +3515,15 @@ public class SnakeApp extends SimpleApplication {
                     // Применяем импульс в направлении движения
                     Vector3f impulse = me.getDirection().mult(25f).addLocal(0, 5f, 0);
                     cd.phy.applyImpulse(impulse, Vector3f.ZERO);
-                    // Создаём 3-4 обломка
+                    // Создаём обломки кактуса с колючками
                     Material fragMat = unshaded(assetManager, new ColorRGBA(0.18f,0.52f,0.15f,1f));
-                    for (int fi = 0; fi < 3; fi++) {
+                    Material spineMat = unshaded(assetManager, new ColorRGBA(0.86f,0.82f,0.66f,1f));
+                    for (int fi = 0; fi < 4; fi++) {
                         float fsize = 0.15f + FastMath.nextRandomFloat() * 0.2f;
-                        Geometry frag = new Geometry("CactFrag"+fi, new Box(fsize,fsize,fsize));
-                        frag.setMaterial(fragMat);
+                        Node frag = new Node("CactFragNode"+fi);
+                        Geometry core = new Geometry("CactFrag"+fi, new Box(fsize,fsize,fsize));
+                        core.setMaterial(fragMat);
+                        frag.attachChild(core);
                         frag.setLocalTranslation(cpos.add(
                                 (FastMath.nextRandomFloat()-0.5f)*0.5f,
                                 FastMath.nextRandomFloat()*0.8f,
@@ -3582,7 +3535,15 @@ public class SnakeApp extends SimpleApplication {
                                 (FastMath.nextRandomFloat()-0.5f)*6f, 2f+FastMath.nextRandomFloat()*3f,
                                 (FastMath.nextRandomFloat()-0.5f)*6f));
                         frag.addControl(fp); bulletAppState.getPhysicsSpace().add(fp);
-                        cd.fragments.add(frag);
+                        for (int sj = 0; sj < 4; sj++) {
+                            Geometry spike = new Geometry("FragSpike"+fi+"_"+sj, new Box(0.02f,0.02f,0.12f));
+                            spike.setMaterial(spineMat);
+                            float a = sj * FastMath.HALF_PI + FastMath.nextRandomFloat()*0.2f;
+                            spike.setLocalRotation(new Quaternion().fromAngleAxis(a, Vector3f.UNIT_Y));
+                            spike.setLocalTranslation(FastMath.cos(a)*fsize, 0f, FastMath.sin(a)*fsize);
+                            frag.attachChild(spike);
+                        }
+                        cd.fragments.add(core);
                     }
                     if (!solo) sendNet("CACT_HIT|" + cd.origX + "|" + cd.origZ);
                 }
