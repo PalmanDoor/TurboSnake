@@ -362,6 +362,12 @@ public class SnakeApp extends SimpleApplication {
 
         void setValue(float v) { value = Math.max(0f, Math.min(1f, v)); refreshVisuals(); }
         float getValue() { return value; }
+        void setVisible(boolean visible) {
+            Spatial.CullHint hint = visible ? Spatial.CullHint.Inherit : Spatial.CullHint.Always;
+            track.setCullHint(hint);
+            fill.setCullHint(hint);
+            thumb.setCullHint(hint);
+        }
     }
 
     // =========================================================================
@@ -390,6 +396,7 @@ public class SnakeApp extends SimpleApplication {
         private VolumeSlider sfxSlider, musicSlider;
         private MenuButton settingsClose;
         private AudioNode menuMusic;
+        private int activeSettingsTab = 0; // 0 = Основное, 1 = Графика
 
         @Override
         public void initialize(AppStateManager sm, Application application) {
@@ -509,6 +516,7 @@ public class SnakeApp extends SimpleApplication {
             settingsPanel.attachChild(header);
 
             BitmapText sfxLabel = new BitmapText(font);
+            sfxLabel.setName("SfxLabel");
             sfxLabel.setSize(19); sfxLabel.setText("Звуки"); sfxLabel.setColor(TEXT);
             sfxLabel.setLocalTranslation(cx-200, cy+136f, Z);
             settingsPanel.attachChild(sfxLabel);
@@ -519,6 +527,7 @@ public class SnakeApp extends SimpleApplication {
             sfxSlider = new VolumeSlider(cx, cy+108f, 340f, effectVolume, assetManager, settingsPanel, Z);
 
             BitmapText musicLabel = new BitmapText(font);
+            musicLabel.setName("MusicLabel");
             musicLabel.setSize(19); musicLabel.setText("Музыка"); musicLabel.setColor(TEXT);
             musicLabel.setLocalTranslation(cx-200, cy+64f, Z);
             settingsPanel.attachChild(musicLabel);
@@ -530,6 +539,7 @@ public class SnakeApp extends SimpleApplication {
 
             // поле ввода ника
             BitmapText nickLabel = new BitmapText(font);
+            nickLabel.setName("NickLabel");
             nickLabel.setSize(14); nickLabel.setText("ИМЯ ИГРОКА");
             nickLabel.setColor(TEXT_DIM);
             nickLabel.setLocalTranslation(cx-155, cy-16f, Z);
@@ -559,13 +569,13 @@ public class SnakeApp extends SimpleApplication {
 
             BitmapText tabMain = new BitmapText(font);
             tabMain.setSize(14); tabMain.setName("SettingsTabMain");
-            tabMain.setText("▶ Основная");
+            tabMain.setText("ОСНОВНОЕ");
             tabMain.setColor(ACCENT2);
             tabMain.setLocalTranslation(cx-155, cy+188f, Z);
             settingsPanel.attachChild(tabMain);
             BitmapText tabGfx = new BitmapText(font);
             tabGfx.setSize(14); tabGfx.setName("SettingsTabGfx");
-            tabGfx.setText("Графика");
+            tabGfx.setText("ГРАФИКА");
             tabGfx.setColor(TEXT_DIM);
             tabGfx.setLocalTranslation(cx-10, cy+188f, Z);
             settingsPanel.attachChild(tabGfx);
@@ -583,10 +593,36 @@ public class SnakeApp extends SimpleApplication {
             shadowsBtn.setLocalTranslation(cx-155, cy-170f, Z);
             settingsPanel.attachChild(shadowsBtn);
 
+            setSettingsTab(0);
             updateSettingsLabels();
             refreshNick();
             settingsPanel.setCullHint(Spatial.CullHint.Always);
             guiNode.attachChild(settingsPanel);
+        }
+
+        private void setSettingsTab(int tab) {
+            activeSettingsTab = tab;
+            Spatial tabMain = settingsPanel.getChild("SettingsTabMain");
+            Spatial tabGfx = settingsPanel.getChild("SettingsTabGfx");
+            if (tabMain instanceof BitmapText) ((BitmapText) tabMain).setColor(tab == 0 ? ACCENT2 : TEXT_DIM);
+            if (tabGfx instanceof BitmapText) ((BitmapText) tabGfx).setColor(tab == 1 ? ACCENT2 : TEXT_DIM);
+
+            String[] mainOnly = {"SfxLabel", "MusicLabel", "NickLabel", "NickBorder", "NickBg"};
+            for (String name : mainOnly) {
+                Spatial s = settingsPanel.getChild(name);
+                if (s != null) s.setCullHint(tab == 0 ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+            }
+            String[] gfxOnly = {"GraphicsLabel", "ShadowsBtn"};
+            for (String name : gfxOnly) {
+                Spatial s = settingsPanel.getChild(name);
+                if (s != null) s.setCullHint(tab == 1 ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+            }
+            if (nicknameText != null) nicknameText.setCullHint(tab == 0 ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+            if (cursorBlink != null) cursorBlink.setCullHint(tab == 0 ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+            if (sfxVal != null) sfxVal.setCullHint(tab == 0 ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+            if (musicVal != null) musicVal.setCullHint(tab == 0 ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+            if (sfxSlider != null) sfxSlider.setVisible(tab == 0);
+            if (musicSlider != null) musicSlider.setVisible(tab == 0);
         }
 
         private void updateSettingsLabels() {
@@ -616,7 +652,7 @@ public class SnakeApp extends SimpleApplication {
         private void setupInput() {
             inputManager.addRawInputListener(new com.jme3.input.RawInputListener() {
                 @Override public void onKeyEvent(com.jme3.input.event.KeyInputEvent evt) {
-                    if (!settingsOpen || !evt.isPressed()) return;
+                    if (!settingsOpen || activeSettingsTab != 0 || !evt.isPressed()) return;
                     int code = evt.getKeyCode();
                     if (code == KeyInput.KEY_BACK) {
                         if (nickname.length() > 0) {
@@ -671,11 +707,13 @@ public class SnakeApp extends SimpleApplication {
                         if (settingsClose.onRelease(mx, my)) {
                             settingsOpen = false; settingsPanel.setCullHint(Spatial.CullHint.Always);
                             saveSettings(nickname.toString());
-                        } else if (sfxSlider.onClick(mx, my)) {
+                        } else if (clickedTab(mx, my)) {
+                            // обработано
+                        } else if (activeSettingsTab == 0 && sfxSlider.onClick(mx, my)) {
                             effectVolume = sfxSlider.getValue(); updateSettingsLabels();
-                        } else if (musicSlider.onClick(mx, my)) {
+                        } else if (activeSettingsTab == 0 && musicSlider.onClick(mx, my)) {
                             musicVolume = musicSlider.getValue(); updateSettingsLabels();
-                        } else {
+                        } else if (activeSettingsTab == 1) {
                             // Клик по качеству теней
                             Spatial shadowBtn = settingsPanel.getChild("ShadowsBtn");
                             if (shadowBtn instanceof BitmapText) {
@@ -701,10 +739,25 @@ public class SnakeApp extends SimpleApplication {
                     else if (settingsBtn.onRelease(mx, my)) {
                         settingsOpen = true;
                         settingsPanel.setCullHint(Spatial.CullHint.Inherit);
+                        setSettingsTab(activeSettingsTab);
                         updateSettingsLabels();
                     }
                 }
             }, "MClick");
+        }
+
+        private boolean clickedTab(float mx, float my) {
+            Spatial tabMain = settingsPanel.getChild("SettingsTabMain");
+            Spatial tabGfx = settingsPanel.getChild("SettingsTabGfx");
+            if (tabMain instanceof BitmapText) {
+                float x = tabMain.getLocalTranslation().x, y = tabMain.getLocalTranslation().y;
+                if (mx >= x && mx <= x + 130f && my >= y - 20f && my <= y + 6f) { setSettingsTab(0); return true; }
+            }
+            if (tabGfx instanceof BitmapText) {
+                float x = tabGfx.getLocalTranslation().x, y = tabGfx.getLocalTranslation().y;
+                if (mx >= x && mx <= x + 120f && my >= y - 20f && my <= y + 6f) { setSettingsTab(1); return true; }
+            }
+            return false;
         }
 
         private void launch(boolean host, boolean solo) {
@@ -1617,6 +1670,7 @@ public class SnakeApp extends SimpleApplication {
         private DirectionalLight sunLight;
         private AmbientLight ambientLight;
         private Geometry sunBody;
+        private com.jme3.shadow.DirectionalLightShadowRenderer shadowRenderer;
         private float dayNightTimer = 0f;
         private static final float DAY_DURATION = 300f;
         private static final float NIGHT_DURATION = 300f;
@@ -1849,6 +1903,7 @@ public class SnakeApp extends SimpleApplication {
                 if (bc.phy != null) { bc.phy.setEnabled(false); bulletAppState.getPhysicsSpace().remove(bc.phy); }
             }
             blackCubes.clear();
+            clearShadowRenderer();
             rootNode.detachAllChildren(); guiNode.detachAllChildren();
             inputManager.clearMappings();
             stateManager.detach(bulletAppState); stateManager.detach(this);
@@ -1904,9 +1959,17 @@ public class SnakeApp extends SimpleApplication {
                     dlsr.setLight(sunLight);
                     dlsr.setShadowIntensity(0.35f + graphicsShadowQuality * 0.12f);
                     app.getViewPort().addProcessor(dlsr);
+                    shadowRenderer = dlsr;
                 } catch (Exception e) {
                     System.out.println("[GFX] Shadows not available: " + e.getMessage());
                 }
+            }
+        }
+
+        private void clearShadowRenderer() {
+            if (shadowRenderer != null) {
+                app.getViewPort().removeProcessor(shadowRenderer);
+                shadowRenderer = null;
             }
         }
 
@@ -3647,6 +3710,7 @@ public class SnakeApp extends SimpleApplication {
                 if (bc.phy!=null) { bc.phy.setEnabled(false); bulletAppState.getPhysicsSpace().remove(bc.phy); }
             }
             blackCubes.clear();
+            clearShadowRenderer();
             rootNode.detachAllChildren(); guiNode.detachAllChildren();
             inputManager.clearMappings();
             inputManager.setCursorVisible(true);  // Fix #1: восстанавливаем курсор при выходе в меню
@@ -3659,6 +3723,7 @@ public class SnakeApp extends SimpleApplication {
             super.cleanup();
             netRunning.set(false);
             if (socket!=null&&!socket.isClosed()) socket.close();
+            clearShadowRenderer();
         }
 
         // ── Вспомогательные классы ────────────────────────────────────────
