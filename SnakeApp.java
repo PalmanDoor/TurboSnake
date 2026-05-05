@@ -807,7 +807,7 @@ public class SnakeApp extends SimpleApplication {
 
         private BitmapText titleText, statusText;
         private final List<MenuButton> serverButtons = new ArrayList<>();
-        private final List<String> serverAddresses = new ArrayList<>();
+        private final List<ServerEntry> serverEntries = new ArrayList<>();
         private MenuButton refreshBtn, createBtn, backBtn;
         private DatagramSocket discoverSocket;
         private Thread scanThread;
@@ -870,19 +870,20 @@ public class SnakeApp extends SimpleApplication {
             serverButtons.clear();
 
             float y = cam.getHeight() - 150f;
-            for (String addr : serverAddresses) {
-                MenuButton btn = new MenuButton(addr, 40f + 140f, y, 280f, 45f,
+            for (ServerEntry entry : serverEntries) {
+                String label = entry.ip + " | " + entry.mapName + " | " + entry.playerCount + " | " + entry.pingMs + "мс";
+                MenuButton btn = new MenuButton(label, 40f + 250f, y, 500f, 45f,
                         BTN_NORMAL, BTN_HOVER, BTN_PRESS, ACCENT2, assetManager, guiNode, 0f);
                 serverButtons.add(btn);
                 y -= 50f;
             }
-            statusText.setText("Найдено лобби: " + serverAddresses.size());
+            statusText.setText("Найдено лобби: " + serverEntries.size());
         }
 
         private void startScan() {
             if (scanning) return;
             scanning = true;
-            serverAddresses.clear();
+            serverEntries.clear();
             updateServerListGUI();
             statusText.setText("Сканирование сети...");
             scanTimer = 3.0f;
@@ -903,9 +904,16 @@ public class SnakeApp extends SimpleApplication {
 
                             String resp = new String(rp.getData(), 0, rp.getLength(), StandardCharsets.UTF_8);
                             if (resp.startsWith("HOST_HERE|")) {
-                                String ip = rp.getAddress().getHostAddress() + ":" + resp.split("\\|")[1];
-                                synchronized (serverAddresses) {
-                                    if (!serverAddresses.contains(ip)) serverAddresses.add(ip);
+                                String[] parts = resp.split("\\|", -1);
+                                if (parts.length >= 2) {
+                                    String ip = rp.getAddress().getHostAddress() + ":" + parts[1];
+                                    String mapName = parts.length > 2 ? parts[2] : "?";
+                                    String playerCount = parts.length > 3 ? parts[3] : "?";
+                                    long pingMs = 0L;
+                                    synchronized (serverEntries) {
+                                        boolean exists = serverEntries.stream().anyMatch(se -> se.ip.equals(ip));
+                                        if (!exists) serverEntries.add(new ServerEntry(ip, mapName, playerCount, pingMs));
+                                    }
                                 }
                                 app.enqueue(this::updateServerListGUI);
                             }
@@ -957,7 +965,7 @@ public class SnakeApp extends SimpleApplication {
                 }
                 for (int i = 0; i < serverButtons.size(); i++) {
                     if (serverButtons.get(i).isHit(mp.x, mp.y)) {
-                        joinServer(serverAddresses.get(i));
+                        joinServer(serverEntries.get(i).ip);
                         return;
                     }
                 }
@@ -1001,6 +1009,17 @@ public class SnakeApp extends SimpleApplication {
             scanning = false;
             if (discoverSocket != null && !discoverSocket.isClosed()) discoverSocket.close();
         }
+
+        static class ServerEntry {
+            final String ip, mapName, playerCount;
+            final long pingMs;
+            ServerEntry(String ip, String mapName, String playerCount, long pingMs) {
+                this.ip = ip;
+                this.mapName = mapName;
+                this.playerCount = playerCount;
+                this.pingMs = pingMs;
+            }
+        }
     }
 
     // =========================================================================
@@ -1026,6 +1045,7 @@ public class SnakeApp extends SimpleApplication {
         private final AtomicBoolean searching = new AtomicBoolean(true);
         private final AtomicBoolean gameStarted = new AtomicBoolean(false);
         private Thread netThread;
+        private volatile boolean joinAcknowledged = false;
 
         private BitmapText notificationText;
         private float notificationAlpha = 0f;
@@ -1270,7 +1290,7 @@ public class SnakeApp extends SimpleApplication {
                         broadcastSock.receive(pkt);
                         String msg = new String(pkt.getData(), 0, pkt.getLength(), StandardCharsets.UTF_8);
                         if ("DISCOVER".equals(msg.trim())) {
-                            String reply = "HOST_HERE|" + GAME_PORT;
+                            String reply = "HOST_HERE|" + GAME_PORT + "|" + MAP_NAMES[selectedMap] + "|" + players.size() + "/4";
                             byte[] rb = reply.getBytes(StandardCharsets.UTF_8);
                             broadcastSock.send(new DatagramPacket(rb, rb.length, pkt.getAddress(), pkt.getPort()));
                         }
@@ -1334,9 +1354,15 @@ public class SnakeApp extends SimpleApplication {
         private void clientDirectLoop() {
             hostAddress = connectHost;
             hostPort = connectPort;
-            sendToHost("JOIN|" + myNick);
+            float retryTimer = 0f;
+            final float retryInterval = 0.8f;
             byte[] buf = new byte[2048];
             while (!gameStarted.get() && searching.get()) {
+                retryTimer -= 0.05f;
+                if (!joinAcknowledged && retryTimer <= 0f) {
+                    sendToHost("JOIN|" + myNick);
+                    retryTimer = retryInterval;
+                }
                 try {
                     DatagramPacket pkt = new DatagramPacket(buf, buf.length);
                     socket.receive(pkt);
@@ -1358,6 +1384,7 @@ public class SnakeApp extends SimpleApplication {
             String[] p = msg.split("\\|", -1);
             switch (p[0]) {
                 case "LOBBY":
+                    joinAcknowledged = true;
                     players.clear();
                     for (int i=1;i<p.length;i++) if (!p[i].isEmpty()) players.add(p[i]);
                     refreshUI();
@@ -2648,6 +2675,7 @@ public class SnakeApp extends SimpleApplication {
                     if (rb != null) space.remove(rb);
                 }
             });
+            if (!solo) sendNet("CHEAT_BORDERS");
         }
 
         // ── Звуки ─────────────────────────────────────────────────────────
@@ -2730,7 +2758,7 @@ public class SnakeApp extends SimpleApplication {
                 case "STATE":
                     if (p.length>=9) {
                         int idx=Integer.parseInt(p[1]);
-                        if (idx>=0&&idx<snakes.size()&&idx!=myIndex) {
+                        if (idx>=0&&idx<snakes.size()&&idx!=myIndex&&!isHost) {
                             float x=Float.parseFloat(p[2]),y=Float.parseFloat(p[3]),
                                     z=Float.parseFloat(p[4]),angle=Float.parseFloat(p[5]);
                             int score=Integer.parseInt(p[6]),len=Integer.parseInt(p[7]);
@@ -2770,6 +2798,9 @@ public class SnakeApp extends SimpleApplication {
                             pd.stateTimer = timer;
                         }
                     } break;
+                case "CHEAT_BORDERS":
+                    if (!bordersRemoved) activateCheatCode();
+                    break;
                 case "CUBE_SPAWN":
                     if (p.length>=4) spawnBlackCube(Integer.parseInt(p[1]),Float.parseFloat(p[2]),Float.parseFloat(p[3]));
                     break;
@@ -3376,12 +3407,16 @@ public class SnakeApp extends SimpleApplication {
                 for (SnakePlayer s : snakes) if (!s.isDead()) s.update(tpf, effectiveSpeed, TURN_SPEED, SEG_SPACING);
             }
 
-            checkCollisions();
+            checkCollisions(tpf);
 
             // Проверка ям (карта 2)
             if (mapIndex==2) {
-                if (solo || isHost) updatePits(tpf);
-                if (solo || isHost) checkPits();
+                if (solo || isHost) {
+                    updatePits(tpf);
+                    checkPits();
+                } else {
+                    updatePitsVisualOnly(tpf);
+                }
             }
 
             // Сетевые отправки
@@ -3474,6 +3509,29 @@ public class SnakeApp extends SimpleApplication {
             }
         }
 
+        private void updatePitsVisualOnly(float tpf) {
+            if (mapIndex != 2) return;
+            for (PitData pit : pits) {
+                pit.stateTimer -= tpf;
+                float progress = 0f;
+                switch (pit.state) {
+                    case RETRACTED:  progress = 0f; break;
+                    case EXTENDING:  progress = 1f - Math.max(0f, pit.stateTimer / PIT_EXTENDING_DURATION); break;
+                    case EXTENDED:   progress = 1f; break;
+                    case RETRACTING: progress = Math.max(0f, pit.stateTimer / PIT_RETRACTING_DURATION); break;
+                }
+                setSpikeProgress(pit, progress);
+                if (pit.stateTimer <= 0f) {
+                    switch (pit.state) {
+                        case RETRACTED:  pit.state = PitState.EXTENDING;  pit.stateTimer = PIT_EXTENDING_DURATION; break;
+                        case EXTENDING:  pit.state = PitState.EXTENDED;   pit.stateTimer = PIT_EXTENDED_DURATION; break;
+                        case EXTENDED:   pit.state = PitState.RETRACTING; pit.stateTimer = PIT_RETRACTING_DURATION; break;
+                        case RETRACTING: pit.state = PitState.RETRACTED;  pit.stateTimer = PIT_RETRACTED_DURATION; break;
+                    }
+                }
+            }
+        }
+
         /** Устанавливает высоту шипов (0=под полом, 1=полностью выдвинуты) */
         private void setSpikeProgress(PitData pit, float p) {
             float floorY = PitData.FLOOR_Y;
@@ -3527,7 +3585,7 @@ public class SnakeApp extends SimpleApplication {
             }
         }
 
-        private void checkCollisions() {
+        private void checkCollisions(float tpf) {
             SnakePlayer me = myIndex<snakes.size() ? snakes.get(myIndex) : null;
             if (me==null||me.isDead()) return;
             Vector3f h = me.getHeadPos();
@@ -3545,19 +3603,33 @@ public class SnakeApp extends SimpleApplication {
             }
 
             // Fix #2: Коллизия с кактусами на карте 1
-            if (mapIndex == 1) checkCactusCollisions(me);
+            if (mapIndex == 1) checkCactusCollisions(me, tpf);
 
             checkFoodFor(me);
         }
 
         /** Fix #2: Проверка столкновения головы змеи с кактусами → разрушение + прилипание к телу */
-        private void checkCactusCollisions(SnakePlayer me) {
+        private void checkCactusCollisions(SnakePlayer me, float tpf) {
             Vector3f h = me.getHeadPos();
             for (CactusData cd : cacti) {
                 if (cd.hit) {
                     // Фрагменты уже есть — проверяем прилипание к телу
                     for (int fi = cd.fragments.size()-1; fi >= 0; fi--) {
                         Geometry frag = cd.fragments.get(fi);
+                        float t = cd.fragmentTimers.get(fi) - tpf;
+                        if (t <= 0f) {
+                            Spatial fragNode = frag.getParent();
+                            if (fragNode != null) {
+                                RigidBodyControl fp = fragNode.getControl(RigidBodyControl.class);
+                                if (fp != null) bulletAppState.getPhysicsSpace().remove(fp);
+                                fragNode.removeFromParent();
+                            }
+                            cd.fragments.remove(fi);
+                            cd.fragmentTimers.remove(fi);
+                            continue;
+                        } else {
+                            cd.fragmentTimers.set(fi, t);
+                        }
                         if (me.bodyContains(frag.getWorldTranslation(), 1.2f)) {
                             // Прилипаем: убираем физику, прикрепляем к голове как сегмент
                             RigidBodyControl fp = frag.getControl(RigidBodyControl.class);
@@ -3566,6 +3638,7 @@ public class SnakeApp extends SimpleApplication {
                             frag.setLocalScale(1f, 1f, 1.2f);
                             if (frag.getParent() != null) frag.getParent().removeFromParent();
                             cd.fragments.remove(fi);
+                            cd.fragmentTimers.remove(fi);
                             if (!solo) sendNet("CACT_STICK|" + cd.origX + "|" + cd.origZ);
                         }
                     }
@@ -3607,6 +3680,7 @@ public class SnakeApp extends SimpleApplication {
                             frag.attachChild(spike);
                         }
                         cd.fragments.add(core);
+                        cd.fragmentTimers.add(CactusData.FRAGMENT_LIFETIME);
                     }
                     if (!solo) sendNet("CACT_HIT|" + cd.origX + "|" + cd.origZ);
                 }
@@ -3745,6 +3819,8 @@ public class SnakeApp extends SimpleApplication {
             final float origX, origZ;
             boolean hit = false;
             final List<Geometry> fragments = new ArrayList<>();
+            final List<Float> fragmentTimers = new ArrayList<>();
+            static final float FRAGMENT_LIFETIME = 8f;
             CactusData(Geometry g, RigidBodyControl p, float x, float z) {
                 geo=g; phy=p; origX=x; origZ=z;
             }
