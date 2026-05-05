@@ -5,10 +5,14 @@ import com.jme3.app.Application;
 import com.jme3.asset.AssetManager;
 import com.jme3.asset.plugins.FileLocator;
 import com.jme3.audio.AudioNode;
+import com.jme3.post.FilterPostProcessor;
+import com.jme3.post.filters.FogFilter;
 import com.jme3.audio.AudioData.DataType;
+import com.jme3.material.RenderState;
 import com.jme3.bullet.BulletAppState;
 import com.jme3.bullet.PhysicsSpace;
 import com.jme3.bullet.collision.shapes.*;
+import com.jme3.util.BufferUtils;
 import com.jme3.bullet.control.RigidBodyControl;
 import com.jme3.font.BitmapFont;
 import com.jme3.font.BitmapText;
@@ -1689,6 +1693,8 @@ public class SnakeApp extends SimpleApplication {
         private static final float FROZEN_ARENA_DURATION = 20f;
         private float frozenSpeedMult = 1f; // множитель скорости (0.35 = очень скользко)
 
+				private FilterPostProcessor fpp;
+
         // ── Общий планировщик случайных ивентов (хост/соло) ──────────────
         private float nextEventTimer = 0f;  // время до следующего ивента
         private final Random eventRng = new Random();
@@ -1706,10 +1712,56 @@ public class SnakeApp extends SimpleApplication {
         private Node waterNode;
         private float waterSpeedMultiplier = 1f; // замедление от воды
 
+				// Параметры рельефа (только для карты 0)
+				private static final int TERRAIN_SEED = 12345;
+				private float[] terrainNoise; // предрассчитанный шум для быстрого доступа
+				private static final float TERRAIN_SCALE = 0.02f; // масштаб шума
+				private static final float TERRAIN_AMPLITUDE = 1.2f; // максимальная высота холмов
+				private static final float TERRAIN_GRID_RESOLUTION = 0.5f; // разрешение сетки
 
+				// Простой 2D-шум для рельефа (можно заменить на Perlin-шум)
+				private float simpleNoise(float x, float z, int seed) {
+						int ix = (int)(x * TERRAIN_SCALE * 1000);
+						int iz = (int)(z * TERRAIN_SCALE * 1000);
+						int hash = ix * 374761393 + iz * 668265263 + seed * 174440041;
+						hash = (hash ^ (hash >> 13)) * 1274126177;
+						return (hash ^ (hash >> 16)) / (float)Integer.MAX_VALUE;
+				}
+
+				// Сглаженный шум
+				private float smoothNoise(float x, float z, int seed) {
+						float corners = (simpleNoise(x - 1, z - 1, seed) + simpleNoise(x + 1, z - 1, seed) +
+														 simpleNoise(x - 1, z + 1, seed) + simpleNoise(x + 1, z + 1, seed)) / 16f;
+						float sides = (simpleNoise(x - 1, z, seed) + simpleNoise(x + 1, z, seed) +
+													 simpleNoise(x, z - 1, seed) + simpleNoise(x, z + 1, seed)) / 8f;
+						float center = simpleNoise(x, z, seed) / 4f;
+						return corners + sides + center;
+				}
+
+				// Основная функция высоты поверхности
+				public float getSurfaceHeight(float x, float z) {
+						if (mapIndex != 0) return -0.2f;   // для карт 1 и 2 пол находится на y = -0.4
+
+						// Центр горы
+						float centerX = 0f;
+						float centerZ = 0f;
+						float mountainRadius = 30f;   // радиус основания горы
+						float mountainHeight = 8f;    // максимальная высота
+
+						// Расстояние от центра
+						float dist = (float) Math.sqrt((x - centerX) * (x - centerX) + (z - centerZ) * (z - centerZ));
+
+						// Плавный профиль горы (косинус)
+						if (dist < mountainRadius) {
+								float factor = (float) Math.cos(dist / mountainRadius * Math.PI * 0.5);
+								return mountainHeight * factor;
+						} else {
+								return 0f;
+						}
+				}
 
         // Константы карты
-        static final float MAP_HALF    = 40f;
+        float mapHalf;
         static final float SEG_SPACING = 0.55f;
         static final float SPEED       = 8f;
         static final float TURN_SPEED  = 2.8f;
@@ -1763,6 +1815,7 @@ public class SnakeApp extends SimpleApplication {
             this.hostPort   = hostPort;
             this.clients    = clients != null ? clients : new CopyOnWriteArrayList<>();
             this.mapIndex   = mapIndex;
+						this.mapHalf = (mapIndex == 0) ? 60f : 40f;
             this.cubesEnabled = cubesEnabled;
         }
 
@@ -1785,10 +1838,20 @@ public class SnakeApp extends SimpleApplication {
             nextEventTimer = 20f + new Random().nextFloat() * 30f;
 
             setupLights(); setupPhysics();
+						fpp = new FilterPostProcessor(assetManager);
+						FogFilter fog = new FogFilter();
+						fog.setFogColor(new ColorRGBA(0.55f, 0.72f, 0.88f, 1f));
+						fog.setFogDistance(80f);
+						fog.setFogDensity(0.004f);
+						fpp.addFilter(fog);
+						app.getViewPort().addProcessor(fpp);
             buildOuterWorld();
             buildArena();
             buildClouds();
             applyShadowModes(rootNode);
+						if (mapIndex == 0) {
+								buildTerrainGrid();
+						}
             createSnakes();
             spawnFood(MAX_FOOD);
             if (cubesEnabled) spawnInitialCubes(); // Fix #13
@@ -1934,6 +1997,10 @@ public class SnakeApp extends SimpleApplication {
             rootNode.detachAllChildren(); guiNode.detachAllChildren();
             inputManager.clearMappings();
             stateManager.detach(bulletAppState); stateManager.detach(this);
+						if (fpp != null) {
+								app.getViewPort().removeProcessor(fpp);
+								fpp = null;
+						}
             stateManager.attach(new GameState(myNick, allPlayers, myIndex, solo, isHost,
                     null, hostAddress, hostPort, clients, mapIndex, cubesEnabled));
         }
@@ -2019,7 +2086,7 @@ public class SnakeApp extends SimpleApplication {
         private void buildOuterWorld() {
             worldNode = new Node("World");
             rootNode.attachChild(worldNode);
-            float ext = MAP_HALF * 3.5f;
+            float ext = mapHalf * 3.5f;
 
             // Земля снаружи
             ColorRGBA groundColor = mapIndex==1
@@ -2038,7 +2105,7 @@ public class SnakeApp extends SimpleApplication {
             int mountainCount = 32;
             for (int i=0; i<mountainCount; i++) {
                 float angle = (float)i/mountainCount * FastMath.TWO_PI + (rng.nextFloat()-0.5f)*0.15f;
-                float dist = MAP_HALF * 1.6f + rng.nextFloat() * MAP_HALF;
+                float dist = mapHalf * 1.6f + rng.nextFloat() * mapHalf;
                 float h = 8f + rng.nextFloat() * 22f;
                 float r = 5f + rng.nextFloat() * 12f;
 
@@ -2066,8 +2133,8 @@ public class SnakeApp extends SimpleApplication {
             int treeCount = 80;
             for (int i=0; i<treeCount; i++) {
                 float angle = rng.nextFloat() * FastMath.TWO_PI;
-                // Минимальная дистанция 1.45*MAP_HALF — ВСЕГДА за стенами
-                float dist = MAP_HALF * 1.45f + rng.nextFloat() * MAP_HALF * 0.9f;
+                // Минимальная дистанция 1.45*mapHalf — ВСЕГДА за стенами
+                float dist = mapHalf * 1.45f + rng.nextFloat() * mapHalf * 0.9f;
                 float tx = FastMath.cos(angle)*dist, tz = FastMath.sin(angle)*dist;
                 float treeH = 2.5f + rng.nextFloat()*3f;
 
@@ -2109,7 +2176,7 @@ public class SnakeApp extends SimpleApplication {
                     ? new ColorRGBA(0.75f,0.62f,0.38f,1f)
                     : (mapIndex==2 ? new ColorRGBA(0.18f,0.16f,0.22f,1f)
                     : new ColorRGBA(0.25f,0.58f,0.25f,1f));
-            addBox(new Vector3f(0,-0.4f,0), new Vector3f(MAP_HALF,0.2f,MAP_HALF), unshaded(assetManager, floorColor), space);
+            // addBox(new Vector3f(0,-0.4f,0), new Vector3f(mapHalf,0.2f,mapHalf), unshaded(assetManager, floorColor), space);
 
             // Сетка пола
             ColorRGBA gridColor = mapIndex==1
@@ -2117,10 +2184,10 @@ public class SnakeApp extends SimpleApplication {
                     : (mapIndex==2 ? new ColorRGBA(0.22f,0.20f,0.30f,1f)
                     : new ColorRGBA(0.20f,0.50f,0.20f,1f));
             Material gridMat = unshaded(assetManager, gridColor);
-            for (float x=-MAP_HALF; x<=MAP_HALF; x+=5f)
-                addBox(new Vector3f(x,-0.19f,0), new Vector3f(0.04f,0.01f,MAP_HALF), gridMat, null);
-            for (float z=-MAP_HALF; z<=MAP_HALF; z+=5f)
-                addBox(new Vector3f(0,-0.19f,z), new Vector3f(MAP_HALF,0.01f,0.04f), gridMat, null);
+            for (float x=-mapHalf; x<=mapHalf; x+=5f)
+                addBox(new Vector3f(x,-0.19f,0), new Vector3f(0.04f,0.01f,mapHalf), gridMat, null);
+            for (float z=-mapHalf; z<=mapHalf; z+=5f)
+                addBox(new Vector3f(0,-0.19f,z), new Vector3f(mapHalf,0.01f,0.04f), gridMat, null);
 
             // Стены
             buildMetalFence(space);
@@ -2128,8 +2195,8 @@ public class SnakeApp extends SimpleApplication {
             // Угловые башни
             Material towerMat = unshaded(assetManager, new ColorRGBA(0.35f,0.40f,0.45f,1f));
             Material towerTop  = unshaded(assetManager, new ColorRGBA(0.25f,0.28f,0.35f,1f));
-            float[] tcx = {-MAP_HALF, MAP_HALF,-MAP_HALF, MAP_HALF};
-            float[] tcz = {-MAP_HALF,-MAP_HALF, MAP_HALF, MAP_HALF};
+            float[] tcx = {-mapHalf, mapHalf,-mapHalf, mapHalf};
+            float[] tcz = {-mapHalf,-mapHalf, mapHalf, mapHalf};
             for (int i=0;i<4;i++) {
                 addBox(new Vector3f(tcx[i],2f,tcz[i]), new Vector3f(2f,2.5f,2f), towerMat, null);
                 addBox(new Vector3f(tcx[i],5f,tcz[i]), new Vector3f(2.2f,0.5f,2.2f), towerTop, null);
@@ -2140,6 +2207,23 @@ public class SnakeApp extends SimpleApplication {
                 wallNode.attachChild(light);
             }
 
+						// Вместо простого Box для пола:
+						if (mapIndex == 0) {
+								buildTerrainFloor(space);
+						} else {
+								// старая логика для других карт
+								// addBox(new Vector3f(0, -0.4f, 0), new Vector3f(mapHalf, 0.2f, mapHalf), 
+											 // unshaded(assetManager, floorColor), space);
+								Geometry floorGeo = new Geometry("Floor", new Box(mapHalf, 0.2f, mapHalf));
+								floorGeo.setMaterial(unshaded(assetManager, floorColor));
+								floorGeo.setLocalTranslation(0, -0.4f, 0);
+								floorGeo.setShadowMode(com.jme3.renderer.queue.RenderQueue.ShadowMode.Receive);
+								wallNode.attachChild(floorGeo);
+								RigidBodyControl floorPhy = new RigidBodyControl(new BoxCollisionShape(new Vector3f(mapHalf, 0.2f, mapHalf)), 0);
+								floorGeo.addControl(floorPhy);
+								space.add(floorPhy);
+						}
+
             // Ямы со шипами (карта 2)
             if (mapIndex == 2) buildPits(space);
 
@@ -2147,58 +2231,220 @@ public class SnakeApp extends SimpleApplication {
             if (mapIndex == 1) buildDesertCacti(space);
         }
 
+				private void buildTerrainFloor(PhysicsSpace space) {
+						float gridSize = mapHalf * 2f;   // покрывает всю игровую зону
+						int resolution = 80; // количество вершин
+						
+						Mesh terrainMesh = new Mesh();
+						Vector3f[] vertices = new Vector3f[(resolution + 1) * (resolution + 1)];
+						int[] indices = new int[resolution * resolution * 6];
+						
+						// Генерируем вершины
+						for (int iz = 0; iz <= resolution; iz++) {
+								for (int ix = 0; ix <= resolution; ix++) {
+										float x = (ix / (float)resolution - 0.5f) * gridSize;
+										float z = (iz / (float)resolution - 0.5f) * gridSize;
+										float y = getSurfaceHeight(x, z);
+										vertices[iz * (resolution + 1) + ix] = new Vector3f(x, y, z);
+								}
+						}
+						
+						// Генерируем индексы
+						int idx = 0;
+						for (int iz = 0; iz < resolution; iz++) {
+								for (int ix = 0; ix < resolution; ix++) {
+										int v0 = iz * (resolution + 1) + ix;
+										int v1 = v0 + 1;
+										int v2 = v0 + (resolution + 1);
+										int v3 = v2 + 1;
+										
+										indices[idx++] = v0;
+										indices[idx++] = v2;
+										indices[idx++] = v1;
+										
+										indices[idx++] = v1;
+										indices[idx++] = v2;
+										indices[idx++] = v3;
+								}
+						}
+						
+						float[] colorArray = new float[(resolution + 1) * (resolution + 1) * 4];
+						for (int iz = 0; iz <= resolution; iz++) {
+								for (int ix = 0; ix <= resolution; ix++) {
+										float h = vertices[iz * (resolution + 1) + ix].y; // верни к абсолютной высоте
+										ColorRGBA col;
+										if (h < 0.5f)       col = new ColorRGBA(0.3f, 0.6f, 0.2f, 1f);
+										else if (h < 1.5f)  col = new ColorRGBA(0.5f, 0.7f, 0.3f, 1f);
+										else if (h < 2.5f)  col = new ColorRGBA(0.7f, 0.6f, 0.4f, 1f); // каменистый
+										else                col = new ColorRGBA(0.8f, 0.8f, 0.7f, 1f); // светлый пик
+										int colorIdx = (iz * (resolution + 1) + ix) * 4;
+										colorArray[colorIdx]   = col.r;
+										colorArray[colorIdx+1] = col.g;
+										colorArray[colorIdx+2] = col.b;
+										colorArray[colorIdx+3] = col.a;
+								}
+						}
+						terrainMesh.setBuffer(VertexBuffer.Type.Color, 4, BufferUtils.createFloatBuffer(colorArray));	
+					
+						terrainMesh.setBuffer(VertexBuffer.Type.Position, 3, 
+																 BufferUtils.createFloatBuffer(vertices));
+						terrainMesh.setBuffer(VertexBuffer.Type.Index, 3, 
+																 BufferUtils.createIntBuffer(indices));
+						terrainMesh.updateBound();
+						
+						Geometry terrain = new Geometry("TerrainFloor", terrainMesh);
+						ColorRGBA floorColor = new ColorRGBA(0.25f, 0.58f, 0.25f, 1f);
+						Material terrainMat = unshaded(assetManager, floorColor);
+						terrain.setMaterial(terrainMat);
+						terrain.setShadowMode(com.jme3.renderer.queue.RenderQueue.ShadowMode.Receive);
+						wallNode.attachChild(terrain);
+						
+						// Физический коллайдер для пола (упрощённый)
+						RigidBodyControl floorPhy = new RigidBodyControl(
+								new MeshCollisionShape(terrainMesh), 0f);
+						terrain.addControl(floorPhy);
+						space.add(floorPhy);
+				}
+
+				private void buildTerrainGrid() {
+						Node gridNode = new Node("TerrainGrid");
+						wallNode.attachChild(gridNode);
+
+						float step = 5f;                    // шаг сетки
+						float yOffset = 0.03f;              // лёгкое приподнятие над рельефом
+						ColorRGBA gridColor = new ColorRGBA(0f, 0.10f, 0f, 0.88f);  // тёмно-зелёный полупрозрачный
+
+						Material mat = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
+						mat.setColor("Color", gridColor);
+						mat.getAdditionalRenderState().setBlendMode(RenderState.BlendMode.Alpha);
+						mat.getAdditionalRenderState().setWireframe(false);
+
+						// Горизонтальные линии (вдоль X)
+						for (float z = -mapHalf; z <= mapHalf; z += step) {
+								Mesh lineMesh = new Mesh();
+								lineMesh.setMode(Mesh.Mode.Lines);
+
+								List<Vector3f> vertices = new ArrayList<>();
+								List<Integer> indices = new ArrayList<>();
+								int idx = 0;
+								for (float x = -mapHalf; x <= mapHalf; x += 0.5f) {  // частота точек на линии
+										float y = getSurfaceHeight(x, z) + yOffset;
+										vertices.add(new Vector3f(x, y, z));
+										if (idx > 0) {
+												indices.add(idx - 1);
+												indices.add(idx);
+										}
+										idx++;
+								}
+								lineMesh.setBuffer(VertexBuffer.Type.Position, 3, BufferUtils.createFloatBuffer(vertices.toArray(new Vector3f[0])));
+								lineMesh.setBuffer(VertexBuffer.Type.Index, 3, BufferUtils.createIntBuffer(indices.stream().mapToInt(i->i).toArray()));
+								lineMesh.updateBound();
+
+								Geometry lineGeo = new Geometry("GridLineZ" + z, lineMesh);
+								lineGeo.setMaterial(mat);
+								lineGeo.setShadowMode(com.jme3.renderer.queue.RenderQueue.ShadowMode.Off);
+								gridNode.attachChild(lineGeo);
+						}
+
+						// Вертикальные линии (вдоль Z)
+						for (float x = -mapHalf; x <= mapHalf; x += step) {
+								Mesh lineMesh = new Mesh();
+								lineMesh.setMode(Mesh.Mode.Lines);
+
+								List<Vector3f> vertices = new ArrayList<>();
+								List<Integer> indices = new ArrayList<>();
+								int idx = 0;
+								for (float z = -mapHalf; z <= mapHalf; z += 0.5f) {
+										float y = getSurfaceHeight(x, z) + yOffset;
+										vertices.add(new Vector3f(x, y, z));
+										if (idx > 0) {
+												indices.add(idx - 1);
+												indices.add(idx);
+										}
+										idx++;
+								}
+								lineMesh.setBuffer(VertexBuffer.Type.Position, 3, BufferUtils.createFloatBuffer(vertices.toArray(new Vector3f[0])));
+								lineMesh.setBuffer(VertexBuffer.Type.Index, 3, BufferUtils.createIntBuffer(indices.stream().mapToInt(i->i).toArray()));
+								lineMesh.updateBound();
+
+								Geometry lineGeo = new Geometry("GridLineX" + x, lineMesh);
+								lineGeo.setMaterial(mat);
+								lineGeo.setShadowMode(com.jme3.renderer.queue.RenderQueue.ShadowMode.Off);
+								gridNode.attachChild(lineGeo);
+						}
+				}
+
         /** Кактусы-препятствия внутри пустынной арены */
-        private void buildDesertCacti(PhysicsSpace space) {
-            Material cactMat = unshaded(assetManager, new ColorRGBA(0.18f,0.52f,0.15f,1f));
-            Material spineMat = unshaded(assetManager, new ColorRGBA(0.85f,0.82f,0.65f,1f));
-            Random rng = new Random(77);
-            int cactusCount = 12;
-            for (int i = 0; i < cactusCount; i++) {
-                float angle = rng.nextFloat() * FastMath.TWO_PI;
-                float dist  = 8f + rng.nextFloat() * (MAP_HALF * 0.75f - 8f);
-                float cx = FastMath.cos(angle) * dist;
-                float cz = FastMath.sin(angle) * dist;
-                // Не ставим прямо у старта
-                if (Math.abs(cx) < 6f && Math.abs(cz) < 6f) continue;
+				private void buildDesertCacti(PhysicsSpace space) {
+						Material cactMat  = unshaded(assetManager, new ColorRGBA(0.18f,0.52f,0.15f,1f));
+						Material spineMat = unshaded(assetManager, new ColorRGBA(0.85f,0.82f,0.65f,1f));
+						Random rng = new Random(77);
+						int cactusCount = 12;
+						for (int i = 0; i < cactusCount; i++) {
+								float angle = rng.nextFloat() * FastMath.TWO_PI;
+								float dist  = 8f + rng.nextFloat() * (mapHalf * 0.75f - 8f);
+								float cx = FastMath.cos(angle) * dist;
+								float cz = FastMath.sin(angle) * dist;
+								if (Math.abs(cx) < 6f && Math.abs(cz) < 6f) continue;
 
-                float cactH = 1.6f + rng.nextFloat() * 1.4f;
-                // Fix #2: Кактус — динамический (масса > 0), может быть сбит змейкой
-                Box trunkBox = new Box(0.28f, cactH/2f, 0.28f);
-                Geometry trunk = new Geometry("CactI"+i, trunkBox);
-                trunk.setMaterial(cactMat);
-                trunk.setLocalTranslation(cx, cactH/2f, cz);
-                wallNode.attachChild(trunk);
-                RigidBodyControl trunkPhy = new RigidBodyControl(
-                        new BoxCollisionShape(new Vector3f(0.28f, cactH/2f, 0.28f)), 3.0f); // динамический!
-                trunkPhy.setFriction(1.2f); trunkPhy.setLinearDamping(0.5f); trunkPhy.setAngularDamping(0.7f);
-                trunk.addControl(trunkPhy); space.add(trunkPhy);
-                cacti.add(new CactusData(trunk, trunkPhy, cx, cz));
+								float cactH = 1.6f + rng.nextFloat() * 1.4f;
 
-                // Рука кактуса
-                if (rng.nextBoolean()) {
-                    float armSide = rng.nextBoolean() ? 0.5f : -0.5f;
-                    Box armBox = new Box(0.35f, 0.18f, 0.18f);
-                    Geometry arm = new Geometry("CactA"+i, armBox);
-                    arm.setMaterial(cactMat);
-                    arm.setLocalTranslation(cx + armSide, cactH * 0.6f, cz);
-                    wallNode.attachChild(arm);
-                }
+								// Ствол
+								Box trunkBox = new Box(0.28f, cactH/2f, 0.28f);
+								Geometry trunk = new Geometry("CactI"+i, trunkBox);
+								trunk.setMaterial(cactMat);
+								trunk.setLocalTranslation(cx, cactH/2f, cz);
+								wallNode.attachChild(trunk);
+								RigidBodyControl trunkPhy = new RigidBodyControl(
+												new BoxCollisionShape(new Vector3f(0.28f, cactH/2f, 0.28f)), 3.0f);
+								trunkPhy.setFriction(1.2f);
+								trunkPhy.setLinearDamping(0.5f);
+								trunkPhy.setAngularDamping(0.7f);
+								trunk.addControl(trunkPhy);
+								space.add(trunkPhy);
 
-                // Иголки (торчащие шипы)
-                int spineCount = 6 + rng.nextInt(5);
-                for (int j = 0; j < spineCount; j++) {
-                    float sa = rng.nextFloat() * FastMath.TWO_PI;
-                    float sy = rng.nextFloat() * cactH;
-                    float sd = 0.3f + rng.nextFloat() * 0.2f;
-                    Box spineBox = new Box(0.04f, 0.04f, sd);
-                    Geometry spine = new Geometry("CactS"+i+"_"+j, spineBox);
-                    spine.setMaterial(spineMat);
-                    spine.setLocalRotation(new Quaternion().fromAngleAxis(sa, Vector3f.UNIT_Y));
-                    spine.setLocalTranslation(cx + FastMath.cos(sa)*0.3f, sy, cz + FastMath.sin(sa)*0.3f);
-                    wallNode.attachChild(spine);
-                }
-            }
-        }
+								CactusData cd = new CactusData(trunk, trunkPhy, cx, cz);
+								cacti.add(cd);
+
+								// Рука (ветка)
+								if (rng.nextBoolean()) {
+										float armSide = rng.nextBoolean() ? 0.5f : -0.5f;
+										Box armBox = new Box(0.35f, 0.18f, 0.18f);
+										Geometry arm = new Geometry("CactA"+i, armBox);
+										arm.setMaterial(cactMat);
+										arm.setLocalTranslation(cx + armSide, cactH * 0.6f, cz);
+										wallNode.attachChild(arm);
+										cd.armGeo = arm;
+								}
+
+								// Иголки
+								int spineCount = 6 + rng.nextInt(5);
+								for (int j = 0; j < spineCount; j++) {
+										float sa = rng.nextFloat() * FastMath.TWO_PI;
+										float sy = rng.nextFloat() * cactH;
+										float sd = 0.3f + rng.nextFloat() * 0.2f;
+										Box spineBox = new Box(0.04f, 0.04f, sd);
+										Geometry spine = new Geometry("CactS"+i+"_"+j, spineBox);
+										spine.setMaterial(spineMat);
+										spine.setLocalRotation(new Quaternion().fromAngleAxis(sa, Vector3f.UNIT_Y));
+										spine.setLocalTranslation(cx + FastMath.cos(sa)*0.3f, sy, cz + FastMath.sin(sa)*0.3f);
+										wallNode.attachChild(spine);
+										cd.spines.add(spine);        // сохраняем — останутся после разрушения
+								}
+						}
+				}
+
+				private boolean bodyContainsWithHeight(SnakePlayer snake, Vector3f point, float radius) {
+						for (int i = 1; i < snake.getSegmentPositions().size(); i++) {
+								Vector3f segPos = snake.getSegmentPositions().get(i);
+								float dx = point.x - segPos.x;
+								float dz = point.z - segPos.z;
+								float dy = point.y - segPos.y;
+								float dist = (float)Math.sqrt(dx * dx + dz * dz + dy * dy * 0.3f); // меньше по Y
+								if (dist < radius) return true;
+						}
+						return false;
+				}
 
         /** Металлические ограждения вместо кирпичей */
         private void buildMetalFence(PhysicsSpace space) {
@@ -2206,10 +2452,10 @@ public class SnakeApp extends SimpleApplication {
 
             // Физические коллайдеры стен — точно по периметру
             Material colMat = unshaded(assetManager, new ColorRGBA(0.45f,0.48f,0.52f,1f));
-            addBox(new Vector3f(0,     wH/2,  MAP_HALF-0.5f), new Vector3f(MAP_HALF,wH/2,0.5f), colMat, space);
-            addBox(new Vector3f(0,     wH/2, -MAP_HALF+0.5f), new Vector3f(MAP_HALF,wH/2,0.5f), colMat, space);
-            addBox(new Vector3f(-MAP_HALF+0.5f, wH/2, 0),      new Vector3f(0.5f,wH/2,MAP_HALF), colMat, space);
-            addBox(new Vector3f( MAP_HALF-0.5f, wH/2, 0),      new Vector3f(0.5f,wH/2,MAP_HALF), colMat, space);
+            addBox(new Vector3f(0,     wH/2,  mapHalf-0.5f), new Vector3f(mapHalf,wH/2,0.5f), colMat, space);
+            addBox(new Vector3f(0,     wH/2, -mapHalf+0.5f), new Vector3f(mapHalf,wH/2,0.5f), colMat, space);
+            addBox(new Vector3f(-mapHalf+0.5f, wH/2, 0),      new Vector3f(0.5f,wH/2,mapHalf), colMat, space);
+            addBox(new Vector3f( mapHalf-0.5f, wH/2, 0),      new Vector3f(0.5f,wH/2,mapHalf), colMat, space);
 
             // Визуальные металлические стойки и перемычки
             Material postMat = unshaded(assetManager, new ColorRGBA(0.55f,0.58f,0.62f,1f));
@@ -2217,37 +2463,37 @@ public class SnakeApp extends SimpleApplication {
             Material railHighMat = unshaded(assetManager, new ColorRGBA(0.70f,0.72f,0.78f,1f));
 
             float postSpacing = 4f;
-            int postCount = (int)(MAP_HALF*2 / postSpacing) + 1;
+            int postCount = (int)(mapHalf*2 / postSpacing) + 1;
 
             for (int i=0; i<postCount; i++) {
-                float px = -MAP_HALF + i * postSpacing;
-                if (px > MAP_HALF) px = MAP_HALF;
+                float px = -mapHalf + i * postSpacing;
+                if (px > mapHalf) px = mapHalf;
 
                 // Стойки по всем 4 сторонам
-                spawnPost(px, MAP_HALF-0.5f, postMat);
-                spawnPost(px, -MAP_HALF+0.5f, postMat);
-                spawnPost(MAP_HALF-0.5f, px, postMat);
-                spawnPost(-MAP_HALF+0.5f, px, postMat);
+                spawnPost(px, mapHalf-0.5f, postMat);
+                spawnPost(px, -mapHalf+0.5f, postMat);
+                spawnPost(mapHalf-0.5f, px, postMat);
+                spawnPost(-mapHalf+0.5f, px, postMat);
             }
 
             // Рельсы (горизонтальные перекладины) — 3 уровня
             float[] railY = {0.7f, 1.6f, 2.8f};
             for (float ry : railY) {
                 // Север
-                addBox(new Vector3f(0, ry, MAP_HALF-0.5f), new Vector3f(MAP_HALF,0.06f,0.06f), railMat, null);
+                addBox(new Vector3f(0, ry, mapHalf-0.5f), new Vector3f(mapHalf,0.06f,0.06f), railMat, null);
                 // Юг
-                addBox(new Vector3f(0, ry, -MAP_HALF+0.5f), new Vector3f(MAP_HALF,0.06f,0.06f), railMat, null);
+                addBox(new Vector3f(0, ry, -mapHalf+0.5f), new Vector3f(mapHalf,0.06f,0.06f), railMat, null);
                 // Запад
-                addBox(new Vector3f(-MAP_HALF+0.5f, ry, 0), new Vector3f(0.06f,0.06f,MAP_HALF), railMat, null);
+                addBox(new Vector3f(-mapHalf+0.5f, ry, 0), new Vector3f(0.06f,0.06f,mapHalf), railMat, null);
                 // Восток
-                addBox(new Vector3f(MAP_HALF-0.5f, ry, 0), new Vector3f(0.06f,0.06f,MAP_HALF), railMat, null);
+                addBox(new Vector3f(mapHalf-0.5f, ry, 0), new Vector3f(0.06f,0.06f,mapHalf), railMat, null);
             }
 
             // Верхний рейл — яркий/светлый
-            addBox(new Vector3f(0, wH, MAP_HALF-0.5f), new Vector3f(MAP_HALF,0.08f,0.08f), railHighMat, null);
-            addBox(new Vector3f(0, wH, -MAP_HALF+0.5f), new Vector3f(MAP_HALF,0.08f,0.08f), railHighMat, null);
-            addBox(new Vector3f(-MAP_HALF+0.5f, wH, 0), new Vector3f(0.08f,0.08f,MAP_HALF), railHighMat, null);
-            addBox(new Vector3f(MAP_HALF-0.5f, wH, 0), new Vector3f(0.08f,0.08f,MAP_HALF), railHighMat, null);
+            addBox(new Vector3f(0, wH, mapHalf-0.5f), new Vector3f(mapHalf,0.08f,0.08f), railHighMat, null);
+            addBox(new Vector3f(0, wH, -mapHalf+0.5f), new Vector3f(mapHalf,0.08f,0.08f), railHighMat, null);
+            addBox(new Vector3f(-mapHalf+0.5f, wH, 0), new Vector3f(0.08f,0.08f,mapHalf), railHighMat, null);
+            addBox(new Vector3f(mapHalf-0.5f, wH, 0), new Vector3f(0.08f,0.08f,mapHalf), railHighMat, null);
         }
 
         private void spawnPost(float x, float z, Material mat) {
@@ -2347,22 +2593,42 @@ public class SnakeApp extends SimpleApplication {
         }
 
         // ── Облака ────────────────────────────────────────────────────────
-        private void buildClouds() {
-            cloudNode = new Node("Clouds");
-            rootNode.attachChild(cloudNode);
-            if (mapIndex == 2) return; // Тёмная карта без облаков
-            Material cm = unshaded(assetManager, new ColorRGBA(1f,1f,1f,0.88f));
-            if (mapIndex == 1) cm = unshaded(assetManager, new ColorRGBA(0.95f,0.90f,0.75f,0.7f));
-            for (int i=0;i<20;i++) {
-                float r = 1.2f+FastMath.nextRandomFloat()*3f;
-                Geometry g = new Geometry("Cloud", new Sphere(8,10,r));
-                g.setMaterial(cm);
-                g.setLocalTranslation(
-                        (FastMath.nextRandomFloat()-0.5f)*MAP_HALF*3f, 14f+FastMath.nextRandomFloat()*10f,
-                        (FastMath.nextRandomFloat()-0.5f)*MAP_HALF*3f);
-                cloudNode.attachChild(g);
-            }
-        }
+				private void buildClouds() {
+						cloudNode = new Node("Clouds");
+						rootNode.attachChild(cloudNode);
+						if (mapIndex == 2) return;
+						
+						Material cloudMat = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
+						cloudMat.setColor("Color", new ColorRGBA(1f, 1f, 1f, 0.55f));
+						cloudMat.getAdditionalRenderState().setBlendMode(RenderState.BlendMode.Alpha);
+						
+						Random rng = new Random(42);
+						for (int i = 0; i < 25; i++) {
+								Node cloud = new Node("Cloud" + i);
+								float baseRadius = 4f + rng.nextFloat() * 8f;
+								// основное тело
+								Geometry main = new Geometry("CloudMain", new Sphere(8, 10, baseRadius));
+								main.setMaterial(cloudMat);
+								cloud.attachChild(main);
+								// дополнительный шарик для объёма
+								Geometry second = new Geometry("CloudSecond", new Sphere(6, 8, baseRadius * 0.7f));
+								second.setLocalTranslation(baseRadius * 0.8f, 0, 0);
+								second.setMaterial(cloudMat);
+								cloud.attachChild(second);
+								// ещё один
+								Geometry third = new Geometry("CloudThird", new Sphere(5, 7, baseRadius * 0.5f));
+								third.setLocalTranslation(-baseRadius * 0.6f, baseRadius * 0.2f, 0);
+								third.setMaterial(cloudMat);
+								cloud.attachChild(third);
+								
+								cloud.setLocalTranslation(
+										(rng.nextFloat() - 0.5f) * mapHalf * 3f,
+										14f + rng.nextFloat() * 10f,
+										(rng.nextFloat() - 0.5f) * mapHalf * 3f
+								);
+								cloudNode.attachChild(cloud);
+						}
+				}
 
         // ── Змеи ──────────────────────────────────────────────────────────
         private static final ColorRGBA[] SNAKE_COLORS = {
@@ -2375,19 +2641,20 @@ public class SnakeApp extends SimpleApplication {
         };
         private static final float[] START_ANGLES = {FastMath.PI, 0f, FastMath.HALF_PI, -FastMath.HALF_PI};
 
-        private void createSnakes() {
-            for (int i=0;i<allPlayers.size();i++) {
-                Node sn = new Node("Snake"+i); rootNode.attachChild(sn);
-                // Локальный игрок получает выбранный цвет
-                ColorRGBA snakeColor = (i == myIndex) ? selectedSnakeColor : SNAKE_COLORS[i%SNAKE_COLORS.length];
-                Material mat = unshaded(assetManager, snakeColor);
-                SnakePlayer sp = new SnakePlayer(
-                        allPlayers.get(i), START_POS[i%START_POS.length].clone(),
-                        START_ANGLES[i%START_ANGLES.length], mat, sn, assetManager, guiNode, cam,
-                        bulletAppState.getPhysicsSpace());
-                snakes.add(sp);
-            }
-        }
+				private void createSnakes() {
+						for (int i = 0; i < allPlayers.size(); i++) {
+								Node sn = new Node("Snake" + i);
+								rootNode.attachChild(sn);
+								ColorRGBA snakeColor = (i == myIndex) ? selectedSnakeColor : SNAKE_COLORS[i % SNAKE_COLORS.length];
+								Material mat = unshaded(assetManager, snakeColor);
+								SnakePlayer sp = new SnakePlayer(
+												allPlayers.get(i), START_POS[i % START_POS.length].clone(),
+												START_ANGLES[i % START_ANGLES.length], mat, sn, assetManager, guiNode, cam,
+												bulletAppState.getPhysicsSpace(),
+												this);   // передаём GameState
+								snakes.add(sp);
+						}
+				}
 
         // ── Еда ───────────────────────────────────────────────────────────
         private void spawnFood(int count) {
@@ -2398,14 +2665,14 @@ public class SnakeApp extends SimpleApplication {
         private void addOneFood() {
             if (foodItems.size() >= MAX_FOOD) return;
             boolean bad = foodItems.stream().filter(f->f.bad&&!f.isDebris).count()<BAD_FOOD && FastMath.nextRandomFloat()<0.25f;
-            float x = FastMath.clamp((FastMath.nextRandomFloat()-0.5f)*(MAP_HALF*2-6), -MAP_HALF+2f, MAP_HALF-2f);
-            float z = FastMath.clamp((FastMath.nextRandomFloat()-0.5f)*(MAP_HALF*2-6), -MAP_HALF+2f, MAP_HALF-2f);
+            float x = FastMath.clamp((FastMath.nextRandomFloat()-0.5f)*(mapHalf*2-6), -mapHalf+2f, mapHalf-2f);
+            float z = FastMath.clamp((FastMath.nextRandomFloat()-0.5f)*(mapHalf*2-6), -mapHalf+2f, mapHalf-2f);
             addFoodWithData(foodIdCounter++, x, z, bad, false);
         }
 
         private void addFoodWithData(int id, float x, float z, boolean bad, boolean isDebris) {
-            x = FastMath.clamp(x, -MAP_HALF+1.5f, MAP_HALF-1.5f);
-            z = FastMath.clamp(z, -MAP_HALF+1.5f, MAP_HALF-1.5f);
+            x = FastMath.clamp(x, -mapHalf+1.5f, mapHalf-1.5f);
+            z = FastMath.clamp(z, -mapHalf+1.5f, mapHalf-1.5f);
             Material mat;
             float radius;
             if (isDebris) { mat = unshaded(assetManager, new ColorRGBA(0.85f,0.85f,0.85f,1f)); radius = 0.32f; }
@@ -2434,8 +2701,8 @@ public class SnakeApp extends SimpleApplication {
         private void hostAddAndBroadcastFood() {
             if (foodItems.stream().filter(f->!f.isDebris).count()>=MAX_FOOD) return;
             boolean bad = foodItems.stream().filter(f->f.bad&&!f.isDebris).count()<BAD_FOOD && FastMath.nextRandomFloat()<0.25f;
-            float x = FastMath.clamp((FastMath.nextRandomFloat()-0.5f)*(MAP_HALF*2-6),-MAP_HALF+2f,MAP_HALF-2f);
-            float z = FastMath.clamp((FastMath.nextRandomFloat()-0.5f)*(MAP_HALF*2-6),-MAP_HALF+2f,MAP_HALF-2f);
+            float x = FastMath.clamp((FastMath.nextRandomFloat()-0.5f)*(mapHalf*2-6),-mapHalf+2f,mapHalf-2f);
+            float z = FastMath.clamp((FastMath.nextRandomFloat()-0.5f)*(mapHalf*2-6),-mapHalf+2f,mapHalf-2f);
             int id = foodIdCounter++;
             addFoodWithData(id, x, z, bad, false);
             sendNet("FOOD|"+id+"|"+x+"|"+z+"|"+(bad?1:0)+"|0");
@@ -2454,8 +2721,8 @@ public class SnakeApp extends SimpleApplication {
         private void spawnDebrisFromDeath(List<Vector3f> positions, int playerIndex) {
             for (Vector3f pos : positions) {
                 int id = foodIdCounter++;
-                float dx = FastMath.clamp(pos.x, -MAP_HALF+1.5f, MAP_HALF-1.5f);
-                float dz = FastMath.clamp(pos.z, -MAP_HALF+1.5f, MAP_HALF-1.5f);
+                float dx = FastMath.clamp(pos.x, -mapHalf+1.5f, mapHalf-1.5f);
+                float dz = FastMath.clamp(pos.z, -mapHalf+1.5f, mapHalf-1.5f);
                 addFoodWithData(id, dx, dz, false, true);
                 if (!solo) sendNet("DEBRIS|"+id+"|"+dx+"|"+dz);
             }
@@ -2798,6 +3065,40 @@ public class SnakeApp extends SimpleApplication {
                             pd.stateTimer = timer;
                         }
                     } break;
+								case "CACT_STICK":
+										if (p.length >= 5) {
+												int snakeIdx = Integer.parseInt(p[1]);
+												float fx = Float.parseFloat(p[2]);
+												float fy = Float.parseFloat(p[3]);
+												float fz = Float.parseFloat(p[4]);
+												if (snakeIdx >= 0 && snakeIdx < snakes.size() && !snakes.get(snakeIdx).isDead()) {
+														// Найдем фрагмент, который висит в данных кактуса с такими координатами
+														Vector3f fragPos = new Vector3f(fx, fy, fz);
+														for (CactusData cd : cacti) {
+																for (int fi = cd.fragments.size() - 1; fi >= 0; fi--) {
+																		Geometry fragGeo = cd.fragments.get(fi);
+																		if (fragGeo.getWorldTranslation().distance(fragPos) < 0.3f) {
+																				// Нашли, приклеиваем к удалённой змее
+																				Node fragNode = fragGeo.getParent();
+																				if (fragNode != null) {
+																						// убрать физику
+																						RigidBodyControl fp = fragNode.getControl(RigidBodyControl.class);
+																						if (fp != null && bulletAppState != null) {
+																								bulletAppState.getPhysicsSpace().remove(fp);
+																								fragNode.removeControl(fp);
+																						}
+																						fragNode.removeFromParent();
+																						snakes.get(snakeIdx).attachCactusFragment(fragNode, fragPos);
+																				}
+																				cd.fragments.remove(fi);
+																				cd.fragmentTimers.remove(fi);
+																				break;
+																		}
+																}
+														}
+												}
+										}
+										break;
                 case "CHEAT_BORDERS":
                     if (!bordersRemoved) activateCheatCode();
                     break;
@@ -2824,17 +3125,64 @@ public class SnakeApp extends SimpleApplication {
                     if (!weatherRainActive) startWeatherRainEvent(); break;
                 case "EVENT_FROZEN": // Fix #12
                     if (!frozenArenaActive) startFrozenArenaEvent(); break;
-                case "CACT_HIT": // Fix #2: синхронизация разрушения кактуса по сети
-                    if (p.length >= 3) {
-                        float cx2 = Float.parseFloat(p[1]), cz2 = Float.parseFloat(p[2]);
-                        for (CactusData cd : cacti) {
-                            if (!cd.hit && Math.abs(cd.origX-cx2)<0.5f && Math.abs(cd.origZ-cz2)<0.5f) {
-                                cd.hit = true;
-                                cd.phy.applyImpulse(new Vector3f(FastMath.nextRandomFloat()*10f,5f,FastMath.nextRandomFloat()*10f), Vector3f.ZERO);
-                                break;
-                            }
-                        }
-                    } break;
+								case "CACT_HIT":
+										if (p.length >= 3) {
+												float cx = Float.parseFloat(p[1]), cz = Float.parseFloat(p[2]);
+												for (CactusData cd : cacti) {
+														if (!cd.hit && Math.abs(cd.origX - cx) < 0.5f && Math.abs(cd.origZ - cz) < 0.5f) {
+																cd.hit = true;
+
+																// Убираем ствол и руку
+																if (cd.trunkPhy != null && bulletAppState != null) {
+																		cd.trunkPhy.setEnabled(false);
+																		bulletAppState.getPhysicsSpace().remove(cd.trunkPhy);
+																}
+																if (cd.trunkGeo.getParent() != null) cd.trunkGeo.removeFromParent();
+																if (cd.armGeo != null && cd.armGeo.getParent() != null) {
+																		cd.armGeo.removeFromParent();
+																}
+
+																// Создаём обломки с колючками
+																Material fragMat = unshaded(assetManager, new ColorRGBA(0.18f,0.52f,0.15f,1f));
+																Material spineMat = unshaded(assetManager, new ColorRGBA(0.86f,0.82f,0.66f,1f));
+																Vector3f cpos = cd.trunkGeo.getWorldTranslation(); // можно взять сохранённую позицию
+																for (int fi = 0; fi < 4; fi++) {
+																		float fsize = 0.15f + FastMath.nextRandomFloat() * 0.2f;
+																		Node frag = new Node("CactFragNode" + fi);
+																		Geometry core = new Geometry("CactFrag" + fi, new Box(fsize, fsize, fsize));
+																		core.setMaterial(fragMat);
+																		frag.attachChild(core);
+																		frag.setLocalTranslation(cpos.add(
+																						(FastMath.nextRandomFloat() - 0.5f) * 0.5f,
+																						FastMath.nextRandomFloat() * 0.8f,
+																						(FastMath.nextRandomFloat() - 0.5f) * 0.5f));
+																		wallNode.attachChild(frag);
+																		RigidBodyControl fp = new RigidBodyControl(
+																						new BoxCollisionShape(new Vector3f(fsize, fsize, fsize)), 0.5f);
+																		fp.setLinearVelocity(new Vector3f(
+																						(FastMath.nextRandomFloat() - 0.5f) * 6f,
+																						2f + FastMath.nextRandomFloat() * 3f,
+																						(FastMath.nextRandomFloat() - 0.5f) * 6f));
+																		frag.addControl(fp);
+																		bulletAppState.getPhysicsSpace().add(fp);
+
+																		for (int sj = 0; sj < 4; sj++) {
+																				Geometry spike = new Geometry("FragSpike" + fi + "_" + sj, new Box(0.02f, 0.02f, 0.12f));
+																				spike.setMaterial(spineMat);
+																				float a = sj * FastMath.HALF_PI + FastMath.nextRandomFloat() * 0.2f;
+																				spike.setLocalRotation(new Quaternion().fromAngleAxis(a, Vector3f.UNIT_Y));
+																				spike.setLocalTranslation(FastMath.cos(a) * fsize, 0f, FastMath.sin(a) * fsize);
+																				frag.attachChild(spike);
+																		}
+																		cd.fragments.add(core);
+																		cd.fragmentTimers.add(CactusData.FRAGMENT_LIFETIME);
+																}
+																// Иголки cd.spines остаются висеть в воздухе — их не трогаем
+																break;
+														}
+												}
+										}
+										break;
                 case "BALL_SPAWN":
                     if (p.length>=3) spawnRainBall(Float.parseFloat(p[1]), Float.parseFloat(p[2]));
                     break;
@@ -2880,8 +3228,8 @@ public class SnakeApp extends SimpleApplication {
                     if (ballRainSpawnTimer <= 0f && (solo || isHost)) {
                         ballRainSpawnTimer = 0.15f;
                         for (int i=0;i<3;i++) {
-                            float rx = (FastMath.nextRandomFloat()-0.5f) * MAP_HALF * 1.8f;
-                            float rz = (FastMath.nextRandomFloat()-0.5f) * MAP_HALF * 1.8f;
+                            float rx = (FastMath.nextRandomFloat()-0.5f) * mapHalf * 1.8f;
+                            float rz = (FastMath.nextRandomFloat()-0.5f) * mapHalf * 1.8f;
                             spawnRainBall(rx, rz);
                             if (!solo) sendNet("BALL_SPAWN|"+rx+"|"+rz);
                         }
@@ -2978,14 +3326,14 @@ public class SnakeApp extends SimpleApplication {
                     if (solo || isHost) nextEventTimer = 25f + eventRng.nextFloat() * 45f;
                 } else {
                     for (int i=0;i<8;i++) {
-                        float rx = (FastMath.nextRandomFloat()-0.5f)*MAP_HALF*2f;
-                        float rz = (FastMath.nextRandomFloat()-0.5f)*MAP_HALF*2f;
+                        float rx = (FastMath.nextRandomFloat()-0.5f)*mapHalf*2f;
+                        float rz = (FastMath.nextRandomFloat()-0.5f)*mapHalf*2f;
                         spawnRainDrop(rx, rz);
                     }
                     if (solo || isHost) {
                         if ((int)(weatherRainTimer*10) % 30 == 0) {
-                            float px = FastMath.clamp((FastMath.nextRandomFloat()-0.5f)*MAP_HALF*1.8f,-MAP_HALF+3f,MAP_HALF-3f);
-                            float pz = FastMath.clamp((FastMath.nextRandomFloat()-0.5f)*MAP_HALF*1.8f,-MAP_HALF+3f,MAP_HALF-3f);
+                            float px = FastMath.clamp((FastMath.nextRandomFloat()-0.5f)*mapHalf*1.8f,-mapHalf+3f,mapHalf-3f);
+                            float pz = FastMath.clamp((FastMath.nextRandomFloat()-0.5f)*mapHalf*1.8f,-mapHalf+3f,mapHalf-3f);
                             float pr = 1.5f + FastMath.nextRandomFloat()*2f;
                             addWaterPuddle(px, pz, pr);
                             if (!solo) sendNet("WATER|"+px+"|"+pz+"|"+pr);
@@ -3044,20 +3392,24 @@ public class SnakeApp extends SimpleApplication {
             rainDrops.add(new RainDrop(geo, 1f + FastMath.nextRandomFloat()*0.5f));
         }
 
-        private void addWaterPuddle(float x, float z, float radius) {
-            for (WaterPuddle wp : waterPuddles) {
-                if (Math.abs(wp.x-x)<2f && Math.abs(wp.z-z)<2f) return;
-            }
-            Geometry geo = new Geometry("Puddle", new Sphere(16,16,1f));
-            Material mat = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
-            mat.setColor("Color", new ColorRGBA(0.16f,0.20f,0.24f,0.58f));
-            mat.getAdditionalRenderState().setBlendMode(com.jme3.material.RenderState.BlendMode.Alpha);
-            geo.setMaterial(mat);
-            geo.setLocalTranslation(x, -0.15f, z);
-            geo.setLocalScale(0.12f, 0.008f, 0.09f);
-            waterNode.attachChild(geo);
-            waterPuddles.add(new WaterPuddle(geo, x, z, radius));
-        }
+				private void addWaterPuddle(float x, float z, float radius) {
+						for (WaterPuddle wp : waterPuddles) {
+								if (Math.abs(wp.x - x) < 2f && Math.abs(wp.z - z) < 2f) return;
+						}
+						Geometry geo = new Geometry("Puddle", new Sphere(16, 16, 1f));
+						Material mat = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
+						mat.setColor("Color", new ColorRGBA(0.16f, 0.20f, 0.24f, 0.58f));
+						mat.getAdditionalRenderState().setBlendMode(com.jme3.material.RenderState.BlendMode.Alpha);
+						geo.setMaterial(mat);
+						
+						// Устанавливаем высоту в зависимости от карты
+						float groundY = getSurfaceHeight(x, z);   // используем свой метод рельефа
+						geo.setLocalTranslation(x, groundY + 0.05f, z);   // чуть выше земли
+						
+						geo.setLocalScale(0.12f, 0.008f, 0.09f);
+						waterNode.attachChild(geo);
+						waterPuddles.add(new WaterPuddle(geo, x, z, radius));
+				}
 
         // ── ИВЕНТ 3: Ледяная арена (Fix #12) ─────────────────────────────
         private void startFrozenArenaEvent() {
@@ -3589,7 +3941,7 @@ public class SnakeApp extends SimpleApplication {
             SnakePlayer me = myIndex<snakes.size() ? snakes.get(myIndex) : null;
             if (me==null||me.isDead()) return;
             Vector3f h = me.getHeadPos();
-            float wallBound = MAP_HALF - 0.9f - SnakePlayer.SEG_R;
+            float wallBound = mapHalf - 0.9f - SnakePlayer.SEG_R;
             boolean wallHit = !bordersRemoved && (Math.abs(h.x)>wallBound || Math.abs(h.z)>wallBound);
             boolean selfHit = me.selfCollides(SEG_SPACING*0.8f);
             if (wallHit||selfHit) { killSnake(myIndex, wallHit?"стена":"самопересечение"); return; }
@@ -3609,83 +3961,119 @@ public class SnakeApp extends SimpleApplication {
         }
 
         /** Fix #2: Проверка столкновения головы змеи с кактусами → разрушение + прилипание к телу */
-        private void checkCactusCollisions(SnakePlayer me, float tpf) {
-            Vector3f h = me.getHeadPos();
-            for (CactusData cd : cacti) {
-                if (cd.hit) {
-                    // Фрагменты уже есть — проверяем прилипание к телу
-                    for (int fi = cd.fragments.size()-1; fi >= 0; fi--) {
-                        Geometry frag = cd.fragments.get(fi);
-                        float t = cd.fragmentTimers.get(fi) - tpf;
-                        if (t <= 0f) {
-                            Spatial fragNode = frag.getParent();
-                            if (fragNode != null) {
-                                RigidBodyControl fp = fragNode.getControl(RigidBodyControl.class);
-                                if (fp != null) bulletAppState.getPhysicsSpace().remove(fp);
-                                fragNode.removeFromParent();
-                            }
-                            cd.fragments.remove(fi);
-                            cd.fragmentTimers.remove(fi);
-                            continue;
-                        } else {
-                            cd.fragmentTimers.set(fi, t);
-                        }
-                        if (me.bodyContains(frag.getWorldTranslation(), 1.2f)) {
-                            // Прилипаем: убираем физику, прикрепляем к голове как сегмент
-                            RigidBodyControl fp = frag.getControl(RigidBodyControl.class);
-                            if (fp == null && frag.getParent() != null) fp = frag.getParent().getControl(RigidBodyControl.class);
-                            if (fp != null) { bulletAppState.getPhysicsSpace().remove(fp); frag.removeControl(fp); }
-                            frag.setLocalScale(1f, 1f, 1.2f);
-                            if (frag.getParent() != null) frag.getParent().removeFromParent();
-                            cd.fragments.remove(fi);
-                            cd.fragmentTimers.remove(fi);
-                            if (!solo) sendNet("CACT_STICK|" + cd.origX + "|" + cd.origZ);
-                        }
-                    }
-                    continue;
-                }
-                // Ствол не сбит: проверяем удар головой
-                Vector3f cpos = cd.geo.getWorldTranslation();
-                if (h.distance(cpos) < 1.2f) {
-                    cd.hit = true;
-                    // Применяем импульс в направлении движения
-                    Vector3f impulse = me.getDirection().mult(25f).addLocal(0, 5f, 0);
-                    cd.phy.applyImpulse(impulse, Vector3f.ZERO);
-                    // Создаём обломки кактуса с колючками
-                    Material fragMat = unshaded(assetManager, new ColorRGBA(0.18f,0.52f,0.15f,1f));
-                    Material spineMat = unshaded(assetManager, new ColorRGBA(0.86f,0.82f,0.66f,1f));
-                    for (int fi = 0; fi < 4; fi++) {
-                        float fsize = 0.15f + FastMath.nextRandomFloat() * 0.2f;
-                        Node frag = new Node("CactFragNode"+fi);
-                        Geometry core = new Geometry("CactFrag"+fi, new Box(fsize,fsize,fsize));
-                        core.setMaterial(fragMat);
-                        frag.attachChild(core);
-                        frag.setLocalTranslation(cpos.add(
-                                (FastMath.nextRandomFloat()-0.5f)*0.5f,
-                                FastMath.nextRandomFloat()*0.8f,
-                                (FastMath.nextRandomFloat()-0.5f)*0.5f));
-                        wallNode.attachChild(frag);
-                        RigidBodyControl fp = new RigidBodyControl(
-                                new BoxCollisionShape(new Vector3f(fsize,fsize,fsize)), 0.5f);
-                        fp.setLinearVelocity(new Vector3f(
-                                (FastMath.nextRandomFloat()-0.5f)*6f, 2f+FastMath.nextRandomFloat()*3f,
-                                (FastMath.nextRandomFloat()-0.5f)*6f));
-                        frag.addControl(fp); bulletAppState.getPhysicsSpace().add(fp);
-                        for (int sj = 0; sj < 4; sj++) {
-                            Geometry spike = new Geometry("FragSpike"+fi+"_"+sj, new Box(0.02f,0.02f,0.12f));
-                            spike.setMaterial(spineMat);
-                            float a = sj * FastMath.HALF_PI + FastMath.nextRandomFloat()*0.2f;
-                            spike.setLocalRotation(new Quaternion().fromAngleAxis(a, Vector3f.UNIT_Y));
-                            spike.setLocalTranslation(FastMath.cos(a)*fsize, 0f, FastMath.sin(a)*fsize);
-                            frag.attachChild(spike);
-                        }
-                        cd.fragments.add(core);
-                        cd.fragmentTimers.add(CactusData.FRAGMENT_LIFETIME);
-                    }
-                    if (!solo) sendNet("CACT_HIT|" + cd.origX + "|" + cd.origZ);
-                }
-            }
-        }
+				private void checkCactusCollisions(SnakePlayer me, float tpf) {
+						Vector3f h = me.getHeadPos();
+						for (CactusData cd : cacti) {
+								if (cd.hit) {
+										// Фрагменты уже созданы — проверяем прилипание к телу
+										for (int fi = cd.fragments.size()-1; fi >= 0; fi--) {
+												Geometry frag = cd.fragments.get(fi);
+												float t = cd.fragmentTimers.get(fi) - tpf;
+												if (t <= 0f) {
+														Spatial fragNode = frag.getParent();
+														if (fragNode != null) {
+																RigidBodyControl fp = fragNode.getControl(RigidBodyControl.class);
+																if (fp != null) bulletAppState.getPhysicsSpace().remove(fp);
+																fragNode.removeFromParent();
+														}
+														cd.fragments.remove(fi);
+														cd.fragmentTimers.remove(fi);
+														continue;
+												} else {
+														cd.fragmentTimers.set(fi, t);
+												}
+												if (me.bodyContains(frag.getWorldTranslation(), 1.2f)) {
+														// Только хост (или соло) выполняет прилипание
+														if (solo || isHost) {
+																Node fragNode = frag.getParent();
+																if (fragNode != null) {
+																		RigidBodyControl fp = fragNode.getControl(RigidBodyControl.class);
+																		if (fp != null) {
+																				bulletAppState.getPhysicsSpace().remove(fp);
+																				fragNode.removeControl(fp);
+																		}
+																		fragNode.removeFromParent();
+																		me.attachCactusFragment(fragNode, frag.getWorldTranslation());
+																}
+																// Удаляем из данных кактуса
+																cd.fragments.remove(fi);
+																cd.fragmentTimers.remove(fi);
+																// Рассылаем всем клиентам
+																if (!solo) {
+																		Vector3f fragWorld = frag.getWorldTranslation();
+																		sendNet("CACT_STICK|" + myIndex + "|" + fragWorld.x + "|" + fragWorld.y + "|" + fragWorld.z);
+																}
+														}
+												}
+										}
+										continue;
+								}
+
+								// Кактус ещё стоит: проверка столкновения головой
+								Vector3f cpos = cd.trunkGeo.getWorldTranslation();
+								if (h.distance(cpos) < 1.2f) {
+										cd.hit = true;
+
+										// Убираем ствол и руку (физику тоже)
+										// Убираем ствол и руку (физику тоже)
+										if (cd.trunkPhy != null && bulletAppState != null) {
+												cd.trunkPhy.setEnabled(false);
+												bulletAppState.getPhysicsSpace().remove(cd.trunkPhy);
+										}
+										if (cd.trunkGeo.getParent() != null) cd.trunkGeo.removeFromParent();
+										if (cd.armGeo != null && cd.armGeo.getParent() != null) {
+												cd.armGeo.removeFromParent();
+										}
+
+										// Удаляем старые колючки, висевшие на кактусе
+										for (Geometry spine : cd.spines) {
+												if (spine.getParent() != null) {
+														spine.removeFromParent();
+												}
+										}
+										cd.spines.clear();
+
+										// Иголки cd.spines остаются на месте — ничего не делаем
+
+										// Создаём обломки с колючками
+										Material fragMat = unshaded(assetManager, new ColorRGBA(0.18f,0.52f,0.15f,1f));
+										Material fragSpineMat = unshaded(assetManager, new ColorRGBA(0.86f,0.82f,0.66f,1f));
+										for (int fi = 0; fi < 4; fi++) {
+												float fsize = 0.15f + FastMath.nextRandomFloat() * 0.2f;
+												Node frag = new Node("CactFragNode"+fi);
+												Geometry core = new Geometry("CactFrag"+fi, new Box(fsize,fsize,fsize));
+												core.setMaterial(fragMat);
+												frag.attachChild(core);
+												frag.setLocalTranslation(cpos.add(
+																(FastMath.nextRandomFloat()-0.5f)*0.5f,
+																FastMath.nextRandomFloat()*0.8f,
+																(FastMath.nextRandomFloat()-0.5f)*0.5f));
+												wallNode.attachChild(frag);
+												RigidBodyControl fp = new RigidBodyControl(
+																new BoxCollisionShape(new Vector3f(fsize,fsize,fsize)), 0.5f);
+												fp.setLinearVelocity(new Vector3f(
+																(FastMath.nextRandomFloat()-0.5f)*6f, 2f+FastMath.nextRandomFloat()*3f,
+																(FastMath.nextRandomFloat()-0.5f)*6f));
+												frag.addControl(fp);
+												bulletAppState.getPhysicsSpace().add(fp);
+
+												// Колючки на обломке
+												for (int sj = 0; sj < 4; sj++) {
+														Geometry spike = new Geometry("FragSpike"+fi+"_"+sj, new Box(0.02f,0.02f,0.12f));
+														spike.setMaterial(fragSpineMat);
+														float a = sj * FastMath.HALF_PI + FastMath.nextRandomFloat()*0.2f;
+														spike.setLocalRotation(new Quaternion().fromAngleAxis(a, Vector3f.UNIT_Y));
+														spike.setLocalTranslation(FastMath.cos(a)*fsize, 0f, FastMath.sin(a)*fsize);
+														frag.attachChild(spike);
+												}
+												cd.fragments.add(core);
+												cd.fragmentTimers.add(CactusData.FRAGMENT_LIFETIME);
+										}
+
+										if (!solo) sendNet("CACT_HIT|" + cd.origX + "|" + cd.origZ);
+								}
+						}
+				}
 
         private void checkFoodFor(SnakePlayer snake) {
             Vector3f h = snake.getHeadPos();
@@ -3762,7 +4150,7 @@ public class SnakeApp extends SimpleApplication {
             for (Spatial s:cloudNode.getChildren()) {
                 Vector3f p = s.getLocalTranslation();
                 p.x += tpf*0.4f;
-                if (p.x>MAP_HALF*2f) p.x=-MAP_HALF*2f;
+                if (p.x>mapHalf*2f) p.x=-mapHalf*2f;
                 s.setLocalTranslation(p);
             }
         }
@@ -3790,6 +4178,11 @@ public class SnakeApp extends SimpleApplication {
             inputManager.setCursorVisible(true);  // Fix #1: восстанавливаем курсор при выходе в меню
             stateManager.detach(bulletAppState); stateManager.detach(this);
             stateManager.attach(new MainMenuState());
+						
+						if (fpp != null) {
+								app.getViewPort().removeProcessor(fpp);
+								fpp = null;
+						}
         }
 
         @Override
@@ -3814,17 +4207,24 @@ public class SnakeApp extends SimpleApplication {
         }
 
         // Fix #2: Данные кактуса
-        static class CactusData {
-            final Geometry geo; final RigidBodyControl phy;
-            final float origX, origZ;
-            boolean hit = false;
-            final List<Geometry> fragments = new ArrayList<>();
-            final List<Float> fragmentTimers = new ArrayList<>();
-            static final float FRAGMENT_LIFETIME = 8f;
-            CactusData(Geometry g, RigidBodyControl p, float x, float z) {
-                geo=g; phy=p; origX=x; origZ=z;
-            }
-        }
+				static class CactusData {
+						final Geometry trunkGeo;
+						final RigidBodyControl trunkPhy;
+						Geometry armGeo;                   // может быть null
+						final List<Geometry> spines = new ArrayList<>(); // колючки на месте
+						final float origX, origZ;
+						boolean hit = false;
+						final List<Geometry> fragments = new ArrayList<>();
+						final List<Float> fragmentTimers = new ArrayList<>();
+						static final float FRAGMENT_LIFETIME = 8f;
+
+						CactusData(Geometry trunk, RigidBodyControl phy, float x, float z) {
+								trunkGeo = trunk;
+								trunkPhy = phy;
+								origX = x;
+								origZ = z;
+						}
+				}
 
         static class FoodItem {
             final Geometry geo; final boolean bad; final int id; final boolean isDebris;
@@ -3879,6 +4279,9 @@ public class SnakeApp extends SimpleApplication {
         private final List<Vector3f> segPos   = new ArrayList<>();
         private final com.jme3.bullet.PhysicsSpace physicsSpace;
 
+				private float currentHeadY = 0.3f;
+				private final List<Float> tailCurrentY = new ArrayList<>();  // плавные высоты хвоста
+				private final GameState gameState;
         private float headingAngle;
         private Vector3f direction;
         private boolean turnLeft, turnRight;
@@ -3886,6 +4289,8 @@ public class SnakeApp extends SimpleApplication {
         private float currentSpeed = 0f;
         private static final float ACCEL = 18f;
         private static final float DECEL = 12f;
+				// Новое: прилипшие куски кактусов
+				private final List<CactusAttachment> cactusAttachments = new ArrayList<>();
 
         private int score = 0;
         private boolean dead = false;
@@ -3895,16 +4300,26 @@ public class SnakeApp extends SimpleApplication {
         private final Node guiRef;
         private final Camera camRef;
 
-        public SnakePlayer(String name, Vector3f startPos, float startAngle,
-                           Material mat, Node parent, AssetManager am,
-                           Node guiNode, Camera cam, com.jme3.bullet.PhysicsSpace space) {
+					public SnakePlayer(String name, Vector3f startPos, float startAngle,
+														 Material mat, Node parent, AssetManager am,
+														 Node guiNode, Camera cam, com.jme3.bullet.PhysicsSpace space,
+														 GameState gameState) {
             this.name=name; this.baseMat=mat; this.parentNode=parent;
             this.assetManager=am; this.guiRef=guiNode; this.camRef=cam;
             this.physicsSpace=space; this.headingAngle=startAngle;
             this.direction=calcDir(headingAngle);
+						this.gameState = gameState;
 
             Vector3f back = direction.negate();
             for (int i=0;i<4;i++) addSegment(startPos.add(back.mult(i*0.55f)));
+						
+						for (int i = 0; i < segPos.size(); i++) {
+								Vector3f pos = segPos.get(i);
+								float terrainHeight = gameState.getSurfaceHeight(pos.x, pos.z);
+								pos.y = terrainHeight + SEG_R; // SEG_R = 0.27f, можно + 0.3f
+								segments.get(i).setLocalTranslation(pos);
+						}
+						currentHeadY = segPos.get(0).y;
 
             BitmapFont font = loadFont(am);
             nameTag = new BitmapText(font);
@@ -3926,6 +4341,7 @@ public class SnakeApp extends SimpleApplication {
             if (cv instanceof ColorRGBA c)
                 sm.setColor("Color", new ColorRGBA(c.r*factor, c.g*factor, c.b*factor, 1f));
             g.setMaterial(sm); g.setLocalTranslation(pos.clone());
+						g.setShadowMode(com.jme3.renderer.queue.RenderQueue.ShadowMode.Cast);
             parentNode.attachChild(g);
 
             if (physicsSpace!=null && segments.size()>0) {
@@ -3935,32 +4351,71 @@ public class SnakeApp extends SimpleApplication {
                 phy.setKinematic(true); g.addControl(phy); physicsSpace.add(phy);
             }
             segments.add(g); segPos.add(pos.clone());
+						tailCurrentY.add(pos.y);
         }
 
         public void setMoving(boolean v) { this.movingInput=v; }
         public boolean isMoving() { return movingInput; }
 
-        public void update(float tpf, float maxSpeed, float turnSpeed, float spacing) {
-            if (dead) return;
-            if (movingInput) currentSpeed=Math.min(maxSpeed, currentSpeed+ACCEL*tpf);
-            else             currentSpeed=Math.max(0f,       currentSpeed-DECEL*tpf);
+				public void update(float tpf, float maxSpeed, float turnSpeed, float spacing) {
+						if (dead) return;
+						if (movingInput) currentSpeed = Math.min(maxSpeed, currentSpeed + ACCEL * tpf);
+						else             currentSpeed = Math.max(0f,         currentSpeed - DECEL * tpf);
 
-            float effectiveTurnSpeed = turnSpeed*(currentSpeed/maxSpeed);
-            if (turnLeft)  headingAngle += effectiveTurnSpeed*tpf;
-            if (turnRight) headingAngle -= effectiveTurnSpeed*tpf;
-            direction=calcDir(headingAngle);
+						float effectiveTurnSpeed = turnSpeed * (currentSpeed / maxSpeed);
+						if (turnLeft)  headingAngle += effectiveTurnSpeed * tpf;
+						if (turnRight) headingAngle -= effectiveTurnSpeed * tpf;
+						direction = calcDir(headingAngle);
 
-            if (currentSpeed<0.01f) return;
-            segPos.get(0).addLocal(direction.mult(currentSpeed*tpf));
-            segments.get(0).setLocalTranslation(segPos.get(0));
+						if (currentSpeed < 0.01f) return;
 
-            for (int i=1;i<segPos.size();i++) {
-                Vector3f prev=segPos.get(i-1), cur=segPos.get(i);
-                Vector3f diff=prev.subtract(cur);
-                float dist=diff.length();
-                if (dist>spacing) { cur.addLocal(diff.normalize().mult(dist-spacing)); segments.get(i).setLocalTranslation(cur); }
-            }
-        }
+						// === Голова с плавной высотой ===
+						Vector3f newHead = segPos.get(0).add(direction.mult(currentSpeed * tpf));
+						float targetY = gameState.getSurfaceHeight(newHead.x, newHead.z) + SEG_R;
+						float maxDy = 10f * tpf;                           // макс. вертикальная скорость
+						if (Math.abs(targetY - currentHeadY) < maxDy) {
+								currentHeadY = targetY;
+						} else {
+								currentHeadY += Math.signum(targetY - currentHeadY) * maxDy;
+						}
+						newHead.y = currentHeadY;
+						segPos.get(0).set(newHead);
+						segments.get(0).setLocalTranslation(newHead);
+						tailCurrentY.set(0, currentHeadY);
+
+						// === Хвост с плавной высотой ===
+						for (int i = 1; i < segPos.size(); i++) {
+								Vector3f prev = segPos.get(i - 1), cur = segPos.get(i);
+								Vector3f diff = prev.subtract(cur);
+								float dist = diff.length();
+								if (dist > spacing) {
+										cur.addLocal(diff.normalize().mult(dist - spacing));
+										// плавная высота для этого сегмента
+										float curTargetY = gameState.getSurfaceHeight(cur.x, cur.z) + SEG_R;
+										float curCurrentY = tailCurrentY.get(i);
+										float curMaxDy = 10f * tpf;
+										if (Math.abs(curTargetY - curCurrentY) < curMaxDy) {
+												curCurrentY = curTargetY;
+										} else {
+												curCurrentY += Math.signum(curTargetY - curCurrentY) * curMaxDy;
+										}
+										cur.y = curCurrentY;
+										tailCurrentY.set(i, curCurrentY);
+										segments.get(i).setLocalTranslation(cur);
+								}
+						}
+
+						updateCactusAttachments(tpf);
+				}
+
+				// В SnakePlayer.update добавить расчёт pitch
+				private float calculatePitch(Vector3f headPos) {
+						float dx = direction.x * 0.5f;
+						float dz = direction.z * 0.5f;
+						float yAhead = gameState.getSurfaceHeight(headPos.x + dx, headPos.z + dz);
+						float dy = yAhead - headPos.y;
+						return (float) Math.atan2(dy, 0.5f) * 0.5f;
+				}
 
         public void updateNameTag(Camera cam) {
             if (nameTag==null||dead||segPos.isEmpty()) return;
@@ -3987,6 +4442,155 @@ public class SnakeApp extends SimpleApplication {
             score=sc;
             if (isDead&&!dead) triggerDeathRemote(parentNode.getParent());
         }
+
+				public int getClosestSegmentIndex(Vector3f worldPos) {
+						if (segPos.isEmpty()) return -1;
+						int closest = 0;
+						float minDist = worldPos.distance(segPos.get(0));
+						for (int i = 1; i < segPos.size(); i++) {
+								float d = worldPos.distance(segPos.get(i));
+								if (d < minDist) {
+										minDist = d;
+										closest = i;
+								}
+						}
+						return closest;
+				}
+				
+				// Приклеить фрагмент кактуса к змее
+				public void attachCactusFragment(Node fragNode, Vector3f worldPos) {
+						RigidBodyControl phy = fragNode.getControl(RigidBodyControl.class);
+						if (phy != null && physicsSpace != null) {
+								physicsSpace.remove(phy);
+								fragNode.removeControl(phy);
+						}
+						fragNode.removeFromParent();
+						parentNode.attachChild(fragNode);
+
+						int segIdx = getClosestSegmentIndex(worldPos);
+						if (segIdx < 0) segIdx = 0;
+						Vector3f segCenter = segPos.get(segIdx);
+
+						// Локальная система координат сегмента
+						Vector3f bodyDir;
+						if (segIdx < segPos.size() - 1) {
+								bodyDir = segPos.get(segIdx + 1).subtract(segPos.get(segIdx)).normalizeLocal();
+						} else if (segIdx > 0) {
+								bodyDir = segPos.get(segIdx).subtract(segPos.get(segIdx - 1)).normalizeLocal();
+						} else {
+								bodyDir = direction;
+						}
+						Vector3f right = new Vector3f(bodyDir.z, 0, -bodyDir.x).normalizeLocal();
+
+						// Проецируем точку касания на локальные оси
+						Vector3f toFrag = worldPos.subtract(segCenter);
+						float along = toFrag.dot(bodyDir);
+						float side  = toFrag.dot(right);
+						float up    = toFrag.y * 0.15f;
+						
+						// Радиус сегмента + небольшой контактный зазор
+						float placementDist = SEG_R + 0.12f;
+						
+						// Нормализуем направление от центра сегмента к точке контакта
+						Vector3f dirToFrag = toFrag.clone();
+						float len = dirToFrag.length();
+						if (len < 0.001f) {
+								dirToFrag = Vector3f.UNIT_Y;
+						} else {
+								dirToFrag.divideLocal(len);
+						}
+
+						// Вычисляем смещение строго по направлению от центра на нужное расстояние
+						Vector3f offset = dirToFrag.mult(placementDist);
+						// Перепроецируем на локальные оси? Нет, мы уже используем готовый offset.
+						// Но чтобы локальные координаты (along, side, up) соответствовали этому offset,
+						// пересчитаем их заново относительно локальных осей:
+						// (этот шаг избыточен, можно оставить как есть, но тогда старые along/side не будут
+						// точно совпадать с новым offset – однако это не критично, так как фрагмент ставится
+						// по offset, а along/side теперь не используются? Нет, они используются в update.
+						// Значит их нужно обновить.)
+						along = offset.dot(bodyDir);
+						side  = offset.dot(right);
+						up    = offset.y;
+
+						// ---- НОВОЕ: фиксируем локальное вращение ----
+						// Берём текущую мировую ориентацию фрагмента
+						Quaternion worldRot = fragNode.getWorldRotation().clone();
+						// Получаем мировую ориентацию сегмента (ось Z по bodyDir, ось X по right, ось Y вверх)
+						Quaternion segWorldRot = new Quaternion();
+						segWorldRot.lookAt(bodyDir, Vector3f.UNIT_Y);
+						// Вычисляем относительное вращение: localRot = inv(segWorldRot) * worldRot
+						Quaternion localRot = segWorldRot.inverse().mult(worldRot);
+						// ------------------------------------------
+
+						cactusAttachments.add(new CactusAttachment(fragNode, segIdx, along, side, up,
+										localRot, 8.0f));
+				}
+				
+				// обновление прилипших фрагментов (вызывать в update)
+				private void updateCactusAttachments(float tpf) {
+						for (int i = cactusAttachments.size() - 1; i >= 0; i--) {
+								CactusAttachment att = cactusAttachments.get(i);
+								att.life -= tpf;
+								if (att.life <= 0f || att.segmentIndex >= segPos.size()) {
+										att.node.removeFromParent();
+										cactusAttachments.remove(i);
+										continue;
+								}
+
+								Vector3f segCenter = segPos.get(att.segmentIndex);
+								Vector3f bodyDir;
+								if (att.segmentIndex < segPos.size() - 1) {
+										bodyDir = segPos.get(att.segmentIndex + 1).subtract(segCenter).normalizeLocal();
+								} else if (att.segmentIndex > 0) {
+										bodyDir = segCenter.subtract(segPos.get(att.segmentIndex - 1)).normalizeLocal();
+								} else {
+										bodyDir = direction;
+								}
+								if (bodyDir.lengthSquared() < 0.0001f) continue;
+								Vector3f right = new Vector3f(bodyDir.z, 0, -bodyDir.x).normalizeLocal();
+
+								// Позиция
+								Vector3f worldOffset = bodyDir.mult(att.alongBody)
+												.addLocal(right.mult(att.sideBody))
+												.addLocal(0, att.up, 0);
+								att.node.setLocalTranslation(segCenter.add(worldOffset));
+
+								// Вращение: восстанавливаем мировое вращение = segWorldRot * localRot
+								Quaternion segWorldRot = new Quaternion();
+								segWorldRot.lookAt(bodyDir, Vector3f.UNIT_Y);
+								att.node.setLocalRotation(segWorldRot.mult(att.localRotation));
+						}
+				}
+				
+				// очистка прилипших фрагментов (при смерти/выходе)
+				private void cleanupCactusAttachments() {
+						for (CactusAttachment att : cactusAttachments) {
+								att.node.removeFromParent();
+						}
+						cactusAttachments.clear();
+				}
+
+				// Внутри SnakePlayer, класс CactusAttachment
+				private static class CactusAttachment {
+						Node node;
+						int segmentIndex;
+						float alongBody, sideBody, up;
+						Quaternion localRotation;          // новое поле
+						float life;
+
+						// Обновлённый конструктор — 7 параметров
+						CactusAttachment(Node node, int idx, float along, float side, float up,
+														 Quaternion localRot, float life) {
+								this.node = node;
+								this.segmentIndex = idx;
+								this.alongBody = along;
+								this.sideBody = side;
+								this.up = up;
+								this.localRotation = localRot;
+								this.life = life;
+						}
+				}
 
         public void triggerDeath(Node scene) {
             if (dead) return; dead=true;
@@ -4049,6 +4653,7 @@ public class SnakeApp extends SimpleApplication {
         }
 
         public void cleanup(Node gui) {
+						cleanupCactusAttachments(); // <-- сначала удаляем прилипшие фрагменты
             if (nameTag!=null) { gui.detachChild(nameTag); nameTag=null; }
             if (!dead&&physicsSpace!=null) {
                 for (Geometry seg:segments) {
