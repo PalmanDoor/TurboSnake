@@ -13,7 +13,6 @@ import com.jme3.post.filters.FogFilter;
 import com.jme3.post.filters.LightScatteringFilter;
 import com.jme3.renderer.queue.RenderQueue;
 import com.jme3.shadow.DirectionalLightShadowRenderer;
-import com.jme3.shadow.EdgeFilteringMode;
 import com.jme3.audio.AudioData.DataType;
 import com.jme3.material.RenderState;
 import com.jme3.bullet.BulletAppState;
@@ -517,7 +516,7 @@ public class TurboSnake extends SimpleApplication {
             float W = cam.getWidth(), H = cam.getHeight();
             try {
                 bgPicture = new Picture("MenuBG");
-                bgPicture.setImage(assetManager, "Media/background.png", true);
+                bgPicture.setImage(assetManager, "assets/turbosnake/textures/background.png", true);
                 bgPicture.setPosition(0, 0); bgPicture.setWidth(W); bgPicture.setHeight(H);
                 guiNode.attachChild(bgPicture);
             } catch (Exception e) {
@@ -2424,7 +2423,7 @@ public class TurboSnake extends SimpleApplication {
         private float dashTimer = 0f;
         private BitmapText dashCooldownText;
 
-        private ColorRGBA baseGridColor = new ColorRGBA(0f, 0.10f, 0f, 0.88f);  // из buildTerrainGrid
+        private final ColorRGBA baseGridColor = new ColorRGBA(0f, 0.10f, 0f, 0.88f);  // из buildTerrainGrid
 
         // Читкод KOPRFDC
         private static final int[] CHEAT_CODE = { KeyInput.KEY_K, KeyInput.KEY_O, KeyInput.KEY_P,
@@ -6301,11 +6300,11 @@ public class TurboSnake extends SimpleApplication {
             rootNode.attachChild(moonGeom);
 
             // ── 6. Тени (DirectionalLightShadowRenderer) ──
-            if (snakes.shadowsEnabled) {
+            if (shadowsEnabled) {
                 gameShadowRenderer = new DirectionalLightShadowRenderer(assetManager, 2048, 3);
                 gameShadowRenderer.setLight(sunLight);
                 gameShadowRenderer.setShadowIntensity(0.72f);
-                gameShadowRenderer.setEdgeFilteringMode(EdgeFilteringMode.PCFPOISSON);
+                //gameShadowRenderer.setEdgeFilteringMode(EdgeFilteringMode.PCFPOISSON);
                 gameShadowRenderer.setShadowZExtend(120f);
                 gameShadowRenderer.setShadowZFadeLength(15f);
                 app.getViewPort().addProcessor(gameShadowRenderer);
@@ -6314,12 +6313,12 @@ public class TurboSnake extends SimpleApplication {
             }
 
             // ── 7. Post-processing ──
-            boolean needFpp = snakes.bloomEnabled || snakes.fogEnabled;
+            boolean needFpp = bloomEnabled || fogEnabled;
             if (needFpp) {
                 gameFpp = new FilterPostProcessor(assetManager);
 
                 // Bloom
-                if (snakes.bloomEnabled) {
+                if (bloomEnabled) {
                     gameBloomFilter = new BloomFilter(BloomFilter.GlowMode.Objects);
                     gameBloomFilter.setBloomIntensity(2.0f);
                     gameBloomFilter.setExposurePower(5.0f);
