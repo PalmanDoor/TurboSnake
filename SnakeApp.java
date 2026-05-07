@@ -165,7 +165,7 @@ public class SnakeApp extends SimpleApplication {
 
 				AppSettings s = new AppSettings(true);
 
-				s.setTitle("9999D Snake");
+				s.setTitle("Turbo Snake 3D");
 
 				// стартовое разрешение
 				s.setResolution(1600, 900);
