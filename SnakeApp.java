@@ -48,6 +48,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public class SnakeApp extends SimpleApplication {
 
+	// Hello from FTD
+
     public static final int BROADCAST_PORT = 45678;
     public static final int GAME_PORT      = 45679;
 
