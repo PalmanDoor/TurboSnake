@@ -1,0 +1,35 @@
+plugins {
+    id 'java'
+    id 'application'
+}
+
+group = 'ru.sonia'
+version = '1.0-SNAPSHOT'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+def jme3_version = '3.9.0-stable'
+
+dependencies {
+    implementation "org.jmonkeyengine:jme3-core:$jme3_version"
+    implementation "org.jmonkeyengine:jme3-desktop:$jme3_version"
+    implementation "org.jmonkeyengine:jme3-lwjgl3:$jme3_version"
+    implementation "org.jmonkeyengine:jme3-effects:$jme3_version"
+
+    // Физика
+    implementation "org.jmonkeyengine:jme3-jbullet:$jme3_version"
+
+    implementation "org.jmonkeyengine:jme3-plugins:$jme3_version"
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
