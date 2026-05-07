@@ -157,20 +157,39 @@ public class SnakeApp extends SimpleApplication {
         }
     }
 
-    public static void main(String[] args) {
-        SnakeApp app = new SnakeApp();
-        AppSettings s = new AppSettings(true);
-        s.setTitle("9999D Snake");
-        s.setResolution(1280, 720);
-        s.setFrameRate(60);
-        s.setSamples(4);          // MSAA x4
-        s.setVSync(true);
-        s.setBitsPerPixel(32);
-        s.setDepthBits(24);
-        app.setSettings(s);
-        app.setShowSettings(false);
-        app.start();
-    }
+		public static void main(String[] args) {
+
+				SnakeApp app = new SnakeApp();
+
+				AppSettings s = new AppSettings(true);
+
+				s.setTitle("9999D Snake");
+
+				// стартовое разрешение
+				s.setResolution(1600, 900);
+
+				// разрешаем менять размер окна
+				s.setResizable(true);
+
+				// borderless fullscreen стиль
+				s.setFullscreen(false);
+
+				s.setVSync(true);
+
+				s.setSamples(4);
+
+				s.setFrameRate(144);
+
+				s.setBitsPerPixel(32);
+
+				s.setDepthBits(24);
+
+				app.setSettings(s);
+
+				app.setShowSettings(false);
+
+				app.start();
+		}
 
     @Override
     public void simpleInitApp() {
@@ -313,16 +332,25 @@ public class SnakeApp extends SimpleApplication {
 
             BitmapFont font = loadFont(am);
             label = new BitmapText(font);
-            label.setSize(22);
+            label.setSize(26);
             label.setText(text);
             label.setColor(textColor);
             guiNode.attachChild(label);
             centerLabel(cx, cy, z);
         }
 
-        private void centerLabel(float cx, float cy, float z) {
-            label.setLocalTranslation(cx - label.getLineWidth()/2f, cy + label.getLineHeight()*0.35f, z + 1f);
-        }
+				private void centerLabel(float cx, float cy, float z) {
+
+						float textX = cx - label.getLineWidth() / 2f;
+
+						float textY = cy + label.getLineHeight() / 3f;
+
+						label.setLocalTranslation(
+										textX,
+										textY,
+										z + 1f
+						);
+				}
 
 				void setBgNormal(ColorRGBA c) {
 						this.bgNormal = c;
@@ -447,6 +475,9 @@ public class SnakeApp extends SimpleApplication {
         private float blinkTimer = 0f;
         private boolean cursorVisible = true;
 
+				private int lastW = -1;
+				private int lastH = -1;
+
         private Node decorNode;
         private float[] ballAngles, ballRadii, ballSpeeds, ballY;
         private MenuButton soloBtn, joinBtn, settingsBtn;
@@ -508,42 +539,236 @@ public class SnakeApp extends SimpleApplication {
             }
         }
 
-        private void setupUI() {
-            BitmapFont font = loadFont(assetManager);
-            float W = cam.getWidth(), H = cam.getHeight(), cx = W/2f;
-            float leftMargin = 180f;
+				private void rebuildUIAfterResize() {
 
-            titleText = new BitmapText(font);
-            titleText.setSize(72); titleText.setText("3D SNAKE");
-            titleText.setColor(ACCENT);
-            titleText.setLocalTranslation(cx - titleText.getLineWidth()/2, H - 45, 1f);
-            guiNode.attachChild(titleText);
+						boolean wasSettingsOpen = settingsOpen;
+						int oldTab = activeSettingsTab;
 
-            subtitleText = new BitmapText(font);
-            subtitleText.setSize(18); subtitleText.setText("MULTIPLAYER EDITION");
-            subtitleText.setColor(TEXT_DIM);
-            subtitleText.setLocalTranslation(cx - subtitleText.getLineWidth()/2, H - 115, 1f);
-            guiNode.attachChild(subtitleText);
+						guiNode.detachAllChildren();
 
-            float btnW = 300f, btnH = 60f, gap = 75f;
-            float startY = H/2f + 50f;
+						setupBackground();
+						setupUI();
 
-            soloBtn = new MenuButton("ОДИНОЧНАЯ ИГРА", leftMargin, startY, btnW, btnH,
-                    BTN_NORMAL, BTN_HOVER, BTN_PRESS, ACCENT3, assetManager, guiNode, 1f);
-            // Кнопка «Сетевая игра»
-            joinBtn = new MenuButton("СЕТЕВАЯ ИГРА", leftMargin, startY - gap, btnW, btnH,
-                    BTN_NORMAL, BTN_HOVER, BTN_PRESS, ACCENT2, assetManager, guiNode, 1f);
-            settingsBtn = new MenuButton("НАСТРОЙКИ", leftMargin, startY - gap*2, btnW, btnH,
-                    BTN_NORMAL, BTN_HOVER, BTN_PRESS, TEXT_DIM, assetManager, guiNode, 1f);
+						settingsOpen = wasSettingsOpen;
+						activeSettingsTab = oldTab;
 
-            infoText = new BitmapText(font);
-            infoText.setSize(12); infoText.setText("W — движение  |  A/D — поворот  |  Ник — в Настройках");
-            infoText.setColor(TEXT_DIM);
-            infoText.setLocalTranslation(cx - infoText.getLineWidth()/2, 20, 1f);
-            guiNode.attachChild(infoText);
+						if (settingsPanel != null) {
+								settingsPanel.setCullHint(settingsOpen ? Spatial.CullHint.Inherit : Spatial.CullHint.Always);
+								setSettingsTab(activeSettingsTab);
+								updateSettingsLabels();
+						}
+				}
 
-            buildSettingsPanel();
-        }
+				private void setupUI() {
+						BitmapFont font = loadFont(assetManager);
+
+						float W = cam.getWidth();
+						float H = cam.getHeight();
+
+						// =========================================================
+						// BACKGROUND OVERLAY
+						// =========================================================
+						Geometry darkOverlay = new Geometry(
+										"DarkOverlay",
+										new com.jme3.scene.shape.Quad(W, H)
+						);
+
+						Material ovMat = new Material(assetManager,
+										"Common/MatDefs/Misc/Unshaded.j3md");
+
+						ovMat.setColor("Color",
+										new ColorRGBA(0f, 0f, 0f, 0.35f));
+
+						ovMat.getAdditionalRenderState()
+										.setBlendMode(RenderState.BlendMode.Alpha);
+
+						darkOverlay.setMaterial(ovMat);
+						darkOverlay.setQueueBucket(RenderQueue.Bucket.Gui);
+						darkOverlay.setLocalTranslation(0, 0, -5);
+
+						guiNode.attachChild(darkOverlay);
+
+						// =========================================================
+						// LOGO
+						// =========================================================
+						try {
+
+								Picture logo = new Picture("TurboSnakeLogo");
+
+								logo.setImage(assetManager,
+												"Media/logo.png",
+												true);
+
+								float logoW = 620f;
+								float logoH = logoW * (1024f / 1536f);
+
+								logo.setWidth(logoW);
+								logo.setHeight(logoH);
+
+								logo.setPosition(
+												40f,
+												H - logoH - 40f
+								);
+
+								guiNode.attachChild(logo);
+
+						} catch (Exception e) {
+								System.out.println("Missing Media/logo.png");
+						}
+
+						// =========================================================
+						// MAIN BUTTONS
+						// =========================================================
+						float btnW = 360f;
+						float btnH = 78f;
+
+						float startX = 250f;
+						float startY = H / 2f + 10f;
+
+						soloBtn = new MenuButton(
+										"ОДИНОЧНАЯ ИГРА",
+										startX,
+										startY,
+										btnW,
+										btnH,
+
+										new ColorRGBA(0.03f,0.07f,0.18f,0.92f),
+										new ColorRGBA(0.10f,0.18f,0.40f,1f),
+										new ColorRGBA(0.02f,0.04f,0.10f,1f),
+
+										new ColorRGBA(1f,0.35f,0.85f,1f),
+
+										assetManager,
+										guiNode,
+										5f
+						);
+
+						joinBtn = new MenuButton(
+										"СЕТЕВАЯ ИГРА",
+										startX,
+										startY - 95f,
+										btnW,
+										btnH,
+
+										new ColorRGBA(0.03f,0.07f,0.18f,0.92f),
+										new ColorRGBA(0.10f,0.18f,0.40f,1f),
+										new ColorRGBA(0.02f,0.04f,0.10f,1f),
+
+										new ColorRGBA(0.35f,0.75f,1f,1f),
+
+										assetManager,
+										guiNode,
+										5f
+						);
+
+						settingsBtn = new MenuButton(
+										"НАСТРОЙКИ",
+										startX,
+										startY - 190f,
+										btnW,
+										btnH,
+
+										new ColorRGBA(0.03f,0.07f,0.18f,0.92f),
+										new ColorRGBA(0.10f,0.18f,0.40f,1f),
+										new ColorRGBA(0.02f,0.04f,0.10f,1f),
+
+										new ColorRGBA(0.80f,0.88f,1f,1f),
+
+										assetManager,
+										guiNode,
+										5f
+						);
+
+						// =========================================================
+						// BOTTOM BUTTONS
+						// =========================================================
+						float miniW = 160f;
+						float miniH = 54f;
+
+						float miniY = 65f;
+
+						MenuButton creditsBtn = new MenuButton(
+										"CREDITS",
+										120f,
+										miniY,
+										miniW,
+										miniH,
+
+										BTN_NORMAL,
+										BTN_HOVER,
+										BTN_PRESS,
+
+										TEXT,
+
+										assetManager,
+										guiNode,
+										5f
+						);
+
+						MenuButton patreonBtn = new MenuButton(
+										"PATREON",
+										320f,
+										miniY,
+										miniW,
+										miniH,
+
+										BTN_NORMAL,
+										BTN_HOVER,
+										BTN_PRESS,
+
+										new ColorRGBA(1f,0.55f,0.15f,1f),
+
+										assetManager,
+										guiNode,
+										5f
+						);
+
+						MenuButton discordBtn = new MenuButton(
+										"DISCORD",
+										520f,
+										miniY,
+										miniW,
+										miniH,
+
+										BTN_NORMAL,
+										BTN_HOVER,
+										BTN_PRESS,
+
+										new ColorRGBA(0.70f,0.65f,1f,1f),
+
+										assetManager,
+										guiNode,
+										5f
+						);
+
+						// =========================================================
+						// FOOTER TEXT
+						// =========================================================
+						infoText = new BitmapText(font);
+
+						infoText.setSize(14);
+
+						infoText.setText(
+										"TURBO SNAKE ENGINE  •  CYBER EDITION"
+						);
+
+						infoText.setColor(
+										new ColorRGBA(0.55f,0.65f,0.85f,1f)
+						);
+
+						infoText.setLocalTranslation(
+										W - infoText.getLineWidth() - 30f,
+										28f,
+										5f
+						);
+
+						guiNode.attachChild(infoText);
+
+						// =========================================================
+						// SETTINGS PANEL
+						// =========================================================
+						buildSettingsPanel();
+				}
 
         private void buildSettingsPanel() {
             float W = cam.getWidth(), H = cam.getHeight(), cx = W/2f, cy = H/2f;
@@ -556,7 +781,8 @@ public class SnakeApp extends SimpleApplication {
             Material dimMat = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
             dimMat.setColor("Color", new ColorRGBA(0f,0f,0f,0.75f));
             dimMat.getAdditionalRenderState().setBlendMode(com.jme3.material.RenderState.BlendMode.Alpha);
-            dimGeo.setMaterial(dimMat); dimGeo.setLocalTranslation(cx, cy, 2f);
+            dimGeo.setMaterial(dimMat); 
+						dimGeo.setLocalTranslation(cx, cy, 45f);
             settingsPanel.attachChild(dimGeo);
 
             // ── Основная карточка ──
@@ -566,10 +792,11 @@ public class SnakeApp extends SimpleApplication {
             Material pm = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
             pm.setColor("Color", BG_CARD);
             pm.getAdditionalRenderState().setBlendMode(com.jme3.material.RenderState.BlendMode.Alpha);
-            panelGeo.setMaterial(pm); panelGeo.setLocalTranslation(cx, cy, 2.3f);
+            panelGeo.setMaterial(pm); 
+						panelGeo.setLocalTranslation(cx, cy, 46f);
             settingsPanel.attachChild(panelGeo);
 
-            final float Z = 3.2f;
+            final float Z = 50f;
 
             // ── Акцентная полоса сверху ──
             Geometry headerLine = new Geometry("PanelHeaderLine", new Box(panelW/2f, 3f, 0.3f));
@@ -816,7 +1043,7 @@ public class SnakeApp extends SimpleApplication {
                 float mx = mp.x, my = mp.y;
                 soloBtn.updateHover(mx, my); joinBtn.updateHover(mx, my);
                 settingsBtn.updateHover(mx, my);
-								
+
 								if (settingsOpen) {
 										sfxSlider.updateHover(mx, my); musicSlider.updateHover(mx, my);
 										settingsClose.updateHover(mx, my);
@@ -831,7 +1058,7 @@ public class SnakeApp extends SimpleApplication {
 												if (btnBloom     != null) btnBloom.updateHover(mx, my);
 										}
 								}
-								
+
             }, "MMouseMove");
 
             inputManager.addMapping("MClick", new MouseButtonTrigger(MouseInput.BUTTON_LEFT));
@@ -946,6 +1173,22 @@ public class SnakeApp extends SimpleApplication {
                 blinkTimer=0; cursorVisible=!cursorVisible;
                 cursorBlink.setColor(cursorVisible ? ACCENT3 : new ColorRGBA(0,0,0,0));
             }
+						
+						float W = cam.getWidth();
+						float H = cam.getHeight();
+						
+						if (lastW == -1 || lastH == -1) {
+								lastW = cam.getWidth();
+								lastH = cam.getHeight();
+						}
+
+						if (cam.getWidth() != lastW || cam.getHeight() != lastH) {
+
+								lastW = cam.getWidth();
+								lastH = cam.getHeight();
+
+								rebuildUIAfterResize();
+						}
         }
     }
 
@@ -959,6 +1202,9 @@ public class SnakeApp extends SimpleApplication {
         private InputManager inputManager;
         private Camera cam;
         private final String myNick;
+
+				private int lastW = -1;
+				private int lastH = -1;
 
         private BitmapText titleText, statusText;
         private final List<MenuButton> serverButtons = new ArrayList<>();
@@ -983,9 +1229,21 @@ public class SnakeApp extends SimpleApplication {
             cam = app.getCamera();
             app.getViewPort().setBackgroundColor(BG);
             app.getInputManager().setCursorVisible(true);
-            buildUI();
-            startScan();
+						buildUI();
+						setupInput();
+						startScan();
         }
+
+				private void rebuildUIAfterResize() {
+
+						guiNode.detachAllChildren();
+
+						serverButtons.clear();
+
+						buildUI();
+
+						updateServerListGUI();
+				}
 
         private void buildUI() {
             BitmapFont font = loadFont(assetManager);
@@ -1016,8 +1274,6 @@ public class SnakeApp extends SimpleApplication {
             // Кнопка «Назад»
             backBtn = new MenuButton("Назад", W - 40f - 140f/2f, commonY, 140f, btnH,
                     BTN_NORMAL, BTN_HOVER, BTN_PRESS, DANGER, assetManager, guiNode, 0f);
-
-            setupInput();
         }
 
         private void updateServerListGUI() {
@@ -1099,9 +1355,48 @@ public class SnakeApp extends SimpleApplication {
                     statusText.setText("Сканирование завершено.");
                 }
             }
+						
+						if (lastW == -1 || lastH == -1) {
+								lastW = cam.getWidth();
+								lastH = cam.getHeight();
+						}
+
+						if (cam.getWidth() != lastW || cam.getHeight() != lastH) {
+
+								lastW = cam.getWidth();
+								lastH = cam.getHeight();
+
+								rebuildUIAfterResize();
+						}
+						
         }
 
         private void setupInput() {
+					
+						inputManager.addMapping("MMove",
+										new MouseAxisTrigger(MouseInput.AXIS_X, false),
+										new MouseAxisTrigger(MouseInput.AXIS_X, true),
+										new MouseAxisTrigger(MouseInput.AXIS_Y, false),
+										new MouseAxisTrigger(MouseInput.AXIS_Y, true)
+						);
+
+						inputManager.addListener((AnalogListener)(n, v, t) -> {
+
+								Vector2f mp = inputManager.getCursorPosition();
+
+								float mx = mp.x;
+								float my = mp.y;
+
+								createBtn.updateHover(mx, my);
+								refreshBtn.updateHover(mx, my);
+								backBtn.updateHover(mx, my);
+
+								for (MenuButton btn : serverButtons) {
+										btn.updateHover(mx, my);
+								}
+
+						}, "MMove");
+					
             inputManager.addMapping("MClick", new MouseButtonTrigger(MouseInput.BUTTON_LEFT));
             inputManager.addListener((ActionListener)(n,p,t) -> {
                 if (!p) return;
@@ -1193,6 +1488,9 @@ public class SnakeApp extends SimpleApplication {
         private final String connectHost;
         private final int connectPort;
 
+				private int lastW = -1;
+				private int lastH = -1;
+
         private DatagramSocket socket;
         private volatile String hostAddress;
         private volatile int hostPort = GAME_PORT;
@@ -1217,6 +1515,15 @@ public class SnakeApp extends SimpleApplication {
         // флаг включения/отключения чёрных кубов
         private boolean cubesEnabled = true;
         private MenuButton cubesToggleBtn;
+				
+				private final Map<String, ColorRGBA> lobbyColors = new ConcurrentHashMap<>();
+
+				private final List<Geometry> colorSwatches = new ArrayList<>();
+				private final List<ColorRGBA> paletteColors = new ArrayList<>();
+
+				private final List<Geometry> previewBalls = new ArrayList<>();
+				private Node previewSnakeNode;
+				private float previewAnimTime = 0f;
 
         private static final String[] MAP_NAMES = {"Зелёная арена", "Пустыня", "Ямы с шипами"};
         private static final ColorRGBA[] MAP_COLORS = { ACCENT, ACCENT3, DANGER };
@@ -1239,13 +1546,111 @@ public class SnakeApp extends SimpleApplication {
             app.getInputManager().setCursorVisible(true);
 
             if (!players.contains(myNick)) players.add(myNick);
+						lobbyColors.put(myNick, selectedSnakeColor.clone());
 
-            buildUI();
-            setupInput();
-            refreshUI();
+						buildUI();
+						setupInput();
+						refreshUI();
 
             if (!isSolo) startNetwork();
         }
+
+				private String encodeColor(ColorRGBA c) {
+						return c.r + "," + c.g + "," + c.b;
+				}
+
+				private ColorRGBA decodeColor(String s) {
+						try {
+								String[] p = s.split(",", -1);
+
+								return new ColorRGBA(
+												Float.parseFloat(p[0]),
+												Float.parseFloat(p[1]),
+												Float.parseFloat(p[2]),
+												1f
+								);
+
+						} catch (Exception e) {
+								return new ColorRGBA(0.15f, 0.9f, 0.3f, 1f);
+						}
+				}
+
+				private String encodeAllColors() {
+						StringBuilder sb = new StringBuilder();
+
+						for (String nick : players) {
+								ColorRGBA c = lobbyColors.getOrDefault(
+												nick,
+												new ColorRGBA(0.15f, 0.9f, 0.3f, 1f)
+								);
+
+								if (sb.length() > 0) sb.append(";");
+
+								sb.append(nick)
+												.append("=")
+												.append(encodeColor(c));
+						}
+
+						return sb.toString();
+				}
+
+				private void applyColorsPacket(String data) {
+						if (data == null || data.isBlank())
+								return;
+
+						String[] entries = data.split(";", -1);
+
+						for (String entry : entries) {
+								String[] kv = entry.split("=", -1);
+
+								if (kv.length != 2)
+										continue;
+
+								lobbyColors.put(kv[0], decodeColor(kv[1]));
+						}
+
+						ColorRGBA myColor = lobbyColors.get(myNick);
+
+						if (myColor != null) {
+								selectedSnakeColor = myColor.clone();
+								refreshColorPaletteSelection();
+								refreshSnakePreviewColor();
+						}
+				}
+
+				private void rebuildUIAfterResize() {
+
+						guiNode.detachAllChildren();
+
+						colorSwatches.clear();
+						paletteColors.clear();
+						previewBalls.clear();
+
+						buildUI();
+
+						refreshUI();
+						refreshMapSelection();
+						refreshColorPaletteSelection();
+						refreshSnakePreviewColor();
+				}
+
+				private void broadcastColor(String nick, ColorRGBA color) {
+						if (!isHost)
+								return;
+
+						broadcastToAll(
+										"COLOR|" + nick + "|" + encodeColor(color)
+						);
+				}
+
+				private void broadcastAllColors() {
+						if (!isHost)
+								return;
+
+						broadcastToAll(
+										"COLORS|" + encodeAllColors()
+						);
+				}
 
         private void buildUI() {
             BitmapFont font = loadFont(assetManager);
@@ -1275,6 +1680,7 @@ public class SnakeApp extends SimpleApplication {
                         leftX + btnW/2f, btnStartY - i * (btnH + 10f),
                         btnW, btnH, BTN_NORMAL, BTN_HOVER, BTN_PRESS, MAP_COLORS[i], assetManager, guiNode, 0f);
             }
+						refreshMapSelection();
 
             searchAnim = new BitmapText(font);
             searchAnim.setSize(16); searchAnim.setColor(ACCENT2);
@@ -1294,42 +1700,201 @@ public class SnakeApp extends SimpleApplication {
             guiNode.attachChild(notificationText);
 
             // Кнопка включения/отключения чёрных кубов
-            cubesToggleBtn = new MenuButton("⬛ КУБЫ: ВКЛ", leftX + 140f, H - 560f, 280f, 44f,
+            cubesToggleBtn = new MenuButton("КУБЫ: ВКЛ", leftX + 140f, H - 560f, 280f, 44f,
                     BTN_NORMAL, BTN_HOVER, BTN_PRESS, ACCENT, assetManager, guiNode, 0f);
-
-            // HSV-пикер цвета змейки в лобби (совпадает с настройками)
-            BitmapText colorTitle = new BitmapText(font);
-            colorTitle.setSize(16); colorTitle.setText("ЦВЕТ ВАШЕЙ ЗМЕЙКИ:");
-            colorTitle.setColor(TEXT_DIM);
-            colorTitle.setLocalTranslation(W - 400f, H - 80f, 0);
-            guiNode.attachChild(colorTitle);
-
-            float swX0 = W - 390f, swY0 = H - 110f, swW = 22f, swH = 13f, swGap = 2f;
-            float[] huesA = {0f,30f,60f,90f,120f,150f,180f,210f,240f,270f,300f,330f};
-            for (int ci = 0; ci < huesA.length; ci++) {
-                ColorRGBA sc = hsvToRGBA(huesA[ci]/360f, 0.85f, 0.9f);
-                Box swatchBox = new Box(swW/2f, swH/2f, 0.5f);
-                Geometry swatch = new Geometry("LobSwH"+ci, swatchBox);
-                swatch.setMaterial(unshaded(assetManager, sc));
-                swatch.setLocalTranslation(swX0 + ci*(swW+swGap), swY0, 0);
-                guiNode.attachChild(swatch);
-            }
-            float[] huesB = {0f,60f,120f,180f,240f,300f,30f,90f,150f,210f,270f,330f};
-            for (int ci = 0; ci < huesB.length; ci++) {
-                ColorRGBA sc = hsvToRGBA(huesB[ci]/360f, 0.5f, 1.0f);
-                Box swatchBox = new Box(swW/2f, swH/2f, 0.5f);
-                Geometry swatch = new Geometry("LobSwP"+ci, swatchBox);
-                swatch.setMaterial(unshaded(assetManager, sc));
-                swatch.setLocalTranslation(swX0 + ci*(swW+swGap), swY0 - swH - swGap, 0);
-                guiNode.attachChild(swatch);
-            }
-            // Образец текущего цвета
-            Box previewBox = new Box(20f, 16f, 0.5f);
-            Geometry colorPreview = new Geometry("LobbyColorPreview", previewBox);
-            colorPreview.setMaterial(unshaded(assetManager, selectedSnakeColor));
-            colorPreview.setLocalTranslation(W - 40f, swY0 - swH/2f, 0);
-            guiNode.attachChild(colorPreview);
+										
+						// Цветовая палитра и превью змейки
+						buildColorPalette(W, H);
+						buildSnakePreview(W, H);
+						refreshColorPaletteSelection();
+						refreshSnakePreviewColor();
         }
+
+				private void buildColorPalette(float W, float H) {
+
+						BitmapFont font = loadFont(assetManager);
+
+						BitmapText colorTitle = new BitmapText(font);
+						colorTitle.setSize(18);
+						colorTitle.setText("ЦВЕТ ЗМЕЙКИ");
+						colorTitle.setColor(ACCENT2);
+						colorTitle.setLocalTranslation(W - 420f, H - 80f, 3f);
+						guiNode.attachChild(colorTitle);
+
+						paletteColors.clear();
+						colorSwatches.clear();
+
+						ColorRGBA[] colors = {
+										new ColorRGBA(0.15f, 0.90f, 0.30f, 1f),
+										new ColorRGBA(0.10f, 0.75f, 1.00f, 1f),
+										new ColorRGBA(0.95f, 0.25f, 1.00f, 1f),
+										new ColorRGBA(1.00f, 0.78f, 0.18f, 1f),
+										new ColorRGBA(1.00f, 0.25f, 0.20f, 1f),
+										new ColorRGBA(0.55f, 0.35f, 1.00f, 1f),
+
+										new ColorRGBA(0.95f, 0.95f, 0.95f, 1f),
+										new ColorRGBA(0.20f, 0.45f, 1.00f, 1f),
+										new ColorRGBA(1.00f, 0.45f, 0.10f, 1f),
+										new ColorRGBA(0.55f, 1.00f, 0.20f, 1f),
+										new ColorRGBA(0.05f, 1.00f, 0.75f, 1f),
+										new ColorRGBA(1.00f, 0.15f, 0.55f, 1f)
+						};
+
+						Collections.addAll(paletteColors, colors);
+
+						float startX = W - 400f;
+						float startY = H - 125f;
+
+						float size = 34f;
+						float gap = 12f;
+
+						for (int i = 0; i < paletteColors.size(); i++) {
+
+								int row = i / 6;
+								int col = i % 6;
+
+								float x = startX + col * (size + gap);
+								float y = startY - row * (size + gap);
+
+								Geometry swatch = new Geometry(
+												"ColorSwatch" + i,
+												new Box(size / 2f, size / 2f, 0.4f)
+								);
+
+								Material mat = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
+								mat.setColor("Color", paletteColors.get(i));
+
+								swatch.setMaterial(mat);
+								swatch.setQueueBucket(RenderQueue.Bucket.Gui);
+								swatch.setLocalTranslation(x, y, 2.2f);
+
+								guiNode.attachChild(swatch);
+								colorSwatches.add(swatch);
+						}
+				}
+
+				private void buildSnakePreview(float W, float H) {
+
+						BitmapFont font = loadFont(assetManager);
+
+						BitmapText previewTitle = new BitmapText(font);
+						previewTitle.setSize(16);
+						previewTitle.setText("ПРЕВЬЮ");
+						previewTitle.setColor(TEXT_DIM);
+						previewTitle.setLocalTranslation(W - 420f, H - 245f, 3f);
+						guiNode.attachChild(previewTitle);
+
+						previewSnakeNode = new Node("PreviewSnakeNode");
+						guiNode.attachChild(previewSnakeNode);
+
+						previewBalls.clear();
+
+						float baseX = W - 290f;
+						float baseY = H - 310f;
+
+						for (int i = 0; i < 5; i++) {
+
+								Geometry ball = new Geometry(
+												"PreviewSnakeBall" + i,
+												new Sphere(18, 18, 16f - i * 1.2f)
+								);
+
+								Material mat = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
+								mat.setColor("Color", selectedSnakeColor);
+
+								ball.setMaterial(mat);
+								ball.setQueueBucket(RenderQueue.Bucket.Gui);
+
+								ball.setLocalTranslation(
+												baseX - i * 36f,
+												baseY,
+												3f + i * 0.05f
+								);
+
+								previewSnakeNode.attachChild(ball);
+								previewBalls.add(ball);
+						}
+
+						BitmapText hint = new BitmapText(font);
+						hint.setSize(13);
+						hint.setText("Цвет видят все игроки");
+						hint.setColor(TEXT_DIM);
+						hint.setLocalTranslation(W - 420f, H - 360f, 3f);
+						guiNode.attachChild(hint);
+				}
+
+				private void refreshSnakePreviewColor() {
+
+						ColorRGBA c = lobbyColors.getOrDefault(myNick, selectedSnakeColor);
+
+						for (int i = 0; i < previewBalls.size(); i++) {
+
+								Geometry ball = previewBalls.get(i);
+
+								float factor = Math.max(0.55f, 1f - i * 0.08f);
+
+								ColorRGBA partColor = new ColorRGBA(
+												c.r * factor,
+												c.g * factor,
+												c.b * factor,
+												1f
+								);
+
+								ball.getMaterial().setColor("Color", partColor);
+						}
+				}
+
+				private void refreshColorPaletteSelection() {
+
+						for (int i = 0; i < colorSwatches.size(); i++) {
+
+								Geometry swatch = colorSwatches.get(i);
+								ColorRGBA pc = paletteColors.get(i);
+
+								boolean selected =
+												Math.abs(pc.r - selectedSnakeColor.r) < 0.02f &&
+												Math.abs(pc.g - selectedSnakeColor.g) < 0.02f &&
+												Math.abs(pc.b - selectedSnakeColor.b) < 0.02f;
+
+								if (selected) {
+										swatch.setLocalScale(1.22f, 1.22f, 1f);
+								} else {
+										swatch.setLocalScale(1f, 1f, 1f);
+								}
+						}
+				}
+
+				private boolean handleColorPaletteClick(float mx, float my) {
+
+						for (int i = 0; i < colorSwatches.size(); i++) {
+
+								Geometry swatch = colorSwatches.get(i);
+								Vector3f p = swatch.getLocalTranslation();
+
+								float size = 42f;
+
+								if (mx >= p.x - size / 2f && mx <= p.x + size / 2f &&
+										my >= p.y - size / 2f && my <= p.y + size / 2f) {
+
+										selectedSnakeColor = paletteColors.get(i).clone();
+										lobbyColors.put(myNick, selectedSnakeColor.clone());
+
+										refreshColorPaletteSelection();
+										refreshSnakePreviewColor();
+
+										if (isHost) {
+												broadcastColor(myNick, selectedSnakeColor);
+										} else if (!isSolo) {
+												sendToHost("COLOR_REQ|" + myNick + "|" + encodeColor(selectedSnakeColor));
+										}
+
+										saveSettings(null);
+										return true;
+								}
+						}
+
+						return false;
+				}
 
         private void showNotification(String msg) {
             notificationText.setText(msg);
@@ -1368,7 +1933,79 @@ public class SnakeApp extends SimpleApplication {
             }
         }
 
+				private void refreshMapSelection() {
+
+						for (int i = 0; i < mapButtons.length; i++) {
+
+								if (mapButtons[i] == null)
+										continue;
+
+								boolean selected = (i == selectedMap);
+
+								if (selected) {
+
+										mapButtons[i].setBgNormal(
+														new ColorRGBA(0.12f, 0.22f, 0.50f, 1f)
+										);
+
+										mapButtons[i].setAccentColor(
+														new ColorRGBA(1f, 1f, 1f, 1f)
+										);
+
+								} else {
+
+										mapButtons[i].setBgNormal(BTN_NORMAL);
+
+										mapButtons[i].setAccentColor(
+														MAP_COLORS[i]
+										);
+								}
+						}
+				}
+
         private void setupInput() {
+						inputManager.addMapping("LMove",
+										new MouseAxisTrigger(MouseInput.AXIS_X, false),
+										new MouseAxisTrigger(MouseInput.AXIS_X, true),
+										new MouseAxisTrigger(MouseInput.AXIS_Y, false),
+										new MouseAxisTrigger(MouseInput.AXIS_Y, true)
+						);
+
+						refreshColorPaletteSelection();
+
+						inputManager.addListener((AnalogListener)(n, v, t) -> {
+
+								Vector2f mp = inputManager.getCursorPosition();
+
+								float mx = mp.x;
+								float my = mp.y;
+
+								if (cubesToggleBtn != null) {
+										cubesToggleBtn.updateHover(mx, my);
+								}
+
+								for (MenuButton btn : mapButtons) {
+										if (btn != null) {
+												btn.updateHover(mx, my);
+										}
+								}
+
+								for (Geometry swatch : colorSwatches) {
+										Vector3f p = swatch.getLocalTranslation();
+
+										boolean hover =
+														mx >= p.x - 22f && mx <= p.x + 22f &&
+														my >= p.y - 22f && my <= p.y + 22f;
+
+										if (hover) {
+												swatch.setLocalScale(1.15f, 1.15f, 1f);
+										}
+								}
+
+								refreshColorPaletteSelection();
+
+						}, "LMove");
+					
             inputManager.addMapping("LClick", new MouseButtonTrigger(MouseInput.BUTTON_LEFT));
             inputManager.addMapping("LSend", new KeyTrigger(KeyInput.KEY_RETURN));
             inputManager.addMapping("LEsc", new KeyTrigger(KeyInput.KEY_ESCAPE));
@@ -1387,6 +2024,7 @@ public class SnakeApp extends SimpleApplication {
                 for (int i=0; i<3; i++) {
                     if (mapButtons[i].isHit(mp.x, mp.y)) {
                         selectedMap = i;
+												refreshMapSelection();
                         if (isHost) broadcastMapSelection();
                         refreshUI();
                     }
@@ -1394,32 +2032,14 @@ public class SnakeApp extends SimpleApplication {
                 // переключаем чёрные кубы
                 if (cubesToggleBtn != null && cubesToggleBtn.isHit(mp.x, mp.y)) {
                     cubesEnabled = !cubesEnabled;
-                    cubesToggleBtn.setText("⬛ КУБЫ: " + (cubesEnabled ? "ВКЛ" : "ВЫКЛ"));
+                    cubesToggleBtn.setText("КУБЫ: " + (cubesEnabled ? "ВКЛ" : "ВЫКЛ"));
                     cubesToggleBtn.setAccentColor(cubesEnabled ? ACCENT : TEXT_DIM);
                 }
-                // выбор цвета змейки в лобби через HSV-пикер
-                float swX0 = cam.getWidth() - 390f, swY0 = cam.getHeight() - 110f;
-                float swW = 22f, swH = 13f, swGap = 2f;
-                float[] huesA = {0f,30f,60f,90f,120f,150f,180f,210f,240f,270f,300f,330f};
-                float[] huesB = {0f,60f,120f,180f,240f,300f,30f,90f,150f,210f,270f,330f};
-                boolean lobColorHit = false;
-                for (int ci = 0; ci < huesA.length; ci++) {
-                    float sx = swX0 + ci*(swW+swGap);
-                    if (mp.x>=sx-swW/2 && mp.x<=sx+swW/2 && mp.y>=swY0-swH/2 && mp.y<=swY0+swH/2) {
-                        selectedSnakeColor = hsvToRGBA(huesA[ci]/360f, 0.85f, 0.9f);
-                        lobColorHit = true;
-                    }
-                    float sy2 = swY0 - swH - swGap;
-                    if (mp.x>=sx-swW/2 && mp.x<=sx+swW/2 && mp.y>=sy2-swH/2 && mp.y<=sy2+swH/2) {
-                        selectedSnakeColor = hsvToRGBA(huesB[ci]/360f, 0.5f, 1.0f);
-                        lobColorHit = true;
-                    }
-                }
-                if (lobColorHit) {
-                    Spatial lp = guiNode.getChild("LobbyColorPreview");
-                    if (lp instanceof Geometry) ((Geometry)lp).getMaterial().setColor("Color", selectedSnakeColor);
-                    saveSettings(null);
-                }
+								
+								// выбор цвета змейки
+								if (handleColorPaletteClick(mp.x, mp.y)) {
+										return;
+								}
             }, "LClick");
         }
 
@@ -1466,19 +2086,59 @@ public class SnakeApp extends SimpleApplication {
         private void handleHostMessage(String msg, InetSocketAddress from) {
             String[] p = msg.split("\\|", -1);
             switch (p[0]) {
-                case "JOIN":
-                    if (players.size() < 4 && !gameStarted.get()) {
-                        String nick = p.length>1 ? p[1] : "Player";
-                        if (!players.contains(nick)) players.add(nick);
-                        if (!clients.contains(from)) clients.add(from);
-                        String notif = "Игрок " + nick + " присоединился";
-                        app.enqueue(() -> showNotification(notif));
-                        broadcastToAll("NOTIF|" + notif);
-                        broadcastLobby();
-                        sendToClient("MAP|" + selectedMap, from);
-                        app.enqueue(this::refreshUI);
-                    }
-                    break;
+								case "JOIN":
+										if (players.size() < 4 && !gameStarted.get()) {
+
+												String nick = p.length > 1 ? p[1] : "Player";
+
+												if (!players.contains(nick))
+														players.add(nick);
+
+												if (!clients.contains(from))
+														clients.add(from);
+
+												if (p.length > 2) {
+														lobbyColors.put(nick, decodeColor(p[2]));
+												} else {
+														lobbyColors.putIfAbsent(nick, new ColorRGBA(0.15f, 0.9f, 0.3f, 1f));
+												}
+
+												lobbyColors.putIfAbsent(myNick, selectedSnakeColor.clone());
+
+												String notif = "Игрок " + nick + " присоединился";
+
+												app.enqueue(() -> showNotification(notif));
+
+												broadcastToAll("NOTIF|" + notif);
+												broadcastLobby();
+												broadcastAllColors();
+
+												sendToClient("MAP|" + selectedMap, from);
+												sendToClient("COLORS|" + encodeAllColors(), from);
+
+												app.enqueue(this::refreshUI);
+										}
+										break;
+								case "COLOR_REQ":
+										if (p.length > 2) {
+
+												String nick = p[1];
+												ColorRGBA color = decodeColor(p[2]);
+
+												lobbyColors.put(nick, color);
+
+												broadcastColor(nick, color);
+												broadcastAllColors();
+
+												app.enqueue(() -> {
+														if (nick.equals(myNick)) {
+																selectedSnakeColor = color.clone();
+																refreshColorPaletteSelection();
+																refreshSnakePreviewColor();
+														}
+												});
+										}
+										break;
                 case "MAP_REQ":
                     if (p.length > 1) {
                         try { selectedMap = Integer.parseInt(p[1]); } catch (Exception ignore) {}
@@ -1515,7 +2175,7 @@ public class SnakeApp extends SimpleApplication {
             while (!gameStarted.get() && searching.get()) {
                 retryTimer -= 0.05f;
                 if (!joinAcknowledged && retryTimer <= 0f) {
-                    sendToHost("JOIN|" + myNick);
+                    sendToHost("JOIN|" + myNick + "|" + encodeColor(selectedSnakeColor));
                     retryTimer = retryInterval;
                 }
                 try {
@@ -1551,11 +2211,40 @@ public class SnakeApp extends SimpleApplication {
                 case "MAP":
                     if (p.length>1) { try { selectedMap = Integer.parseInt(p[1]); refreshUI(); } catch (Exception ignore) {} }
                     break;
-                case "START":
-                    if (p.length>1) try { selectedMap = Integer.parseInt(p[1]); } catch (Exception ignore) {}
-                    gameStarted.set(true);
-                    app.enqueue(this::launchGame);
-                    break;
+								case "START":
+										if (p.length > 1) {
+												try {
+														selectedMap = Integer.parseInt(p[1]);
+												} catch (Exception ignore) {}
+										}
+
+										if (p.length > 2) {
+												applyColorsPacket(p[2]);
+										}
+
+										gameStarted.set(true);
+										app.enqueue(this::launchGame);
+										break;
+								case "COLOR":
+										if (p.length > 2) {
+
+												String nick = p[1];
+												ColorRGBA color = decodeColor(p[2]);
+
+												lobbyColors.put(nick, color);
+
+												if (nick.equals(myNick)) {
+														selectedSnakeColor = color.clone();
+														refreshColorPaletteSelection();
+														refreshSnakePreviewColor();
+												}
+										}
+										break;
+								case "COLORS":
+										if (p.length > 1) {
+												applyColorsPacket(p[1]);
+										}
+										break;
             }
         }
 
@@ -1569,24 +2258,43 @@ public class SnakeApp extends SimpleApplication {
 
         private void startGame() {
             gameStarted.set(true);
-            broadcastToAll("START|" + selectedMap);
+						broadcastAllColors();
+						broadcastToAll("START|" + selectedMap + "|" + encodeAllColors());
             launchGame();
         }
 
-        private void launchGame() {
-            searching.set(false);
-            List<String> playerList = new ArrayList<>(players);
-            int myIdx = playerList.indexOf(myNick);
-            guiNode.detachAllChildren();
-            inputManager.clearMappings();
-            app.getInputManager().setCursorVisible(false);
-            DatagramSocket gameSocket = this.socket;
-            this.socket = null;
-            app.getStateManager().detach(this);
-            app.getStateManager().attach(
-                    new GameState(myNick, playerList, myIdx, isSolo || playerList.size()==1,
-                            isHost, gameSocket, hostAddress, hostPort, clients, selectedMap, cubesEnabled));
-        }
+				private void launchGame() {
+						searching.set(false);
+
+						List<String> playerList = new ArrayList<>(players);
+						int myIdx = playerList.indexOf(myNick);
+
+						guiNode.detachAllChildren();
+						inputManager.clearMappings();
+						app.getInputManager().setCursorVisible(false);
+
+						DatagramSocket gameSocket = this.socket;
+						this.socket = null;
+
+						app.getStateManager().detach(this);
+
+						app.getStateManager().attach(
+										new GameState(
+														myNick,
+														playerList,
+														myIdx,
+														isSolo || playerList.size() == 1,
+														isHost,
+														gameSocket,
+														hostAddress,
+														hostPort,
+														clients,
+														selectedMap,
+														cubesEnabled,
+														new HashMap<>(lobbyColors)
+										)
+						);
+				}
 
         private void backToMenu() {
             searching.set(false);
@@ -1620,7 +2328,53 @@ public class SnakeApp extends SimpleApplication {
                 ColorRGBA c = new ColorRGBA(1f, 1f, 1f, notificationAlpha);
                 notificationText.setColor(c);
             }
+						
+						if (lastW == -1 || lastH == -1) {
+								lastW = cam.getWidth();
+								lastH = cam.getHeight();
+						}
+
+						if (cam.getWidth() != lastW || cam.getHeight() != lastH) {
+
+								lastW = cam.getWidth();
+								lastH = cam.getHeight();
+
+								rebuildUIAfterResize();
+						}
+						
+						updateSnakePreview(tpf);
         }
+
+				private void updateSnakePreview(float tpf) {
+
+						if (previewBalls.isEmpty())
+								return;
+
+						previewAnimTime += tpf;
+
+						float W = cam.getWidth();
+						float H = cam.getHeight();
+
+						float baseX = W - 290f;
+						float baseY = H - 310f;
+
+						for (int i = 0; i < previewBalls.size(); i++) {
+
+								Geometry ball = previewBalls.get(i);
+
+								float wave = FastMath.sin(previewAnimTime * 4f - i * 0.55f) * 8f;
+								float bob  = FastMath.sin(previewAnimTime * 3f + i * 0.7f) * 4f;
+
+								ball.setLocalTranslation(
+												baseX - i * 36f,
+												baseY + wave + bob,
+												3f + i * 0.05f
+								);
+
+								float scale = 1f + FastMath.sin(previewAnimTime * 3f - i * 0.4f) * 0.05f;
+								ball.setLocalScale(scale, scale, 1f);
+						}
+				}
 
         private String getLocalIP() {
             try { return InetAddress.getLocalHost().getHostAddress(); } catch (Exception e) { return "?"; }
@@ -1651,6 +2405,8 @@ public class SnakeApp extends SimpleApplication {
         private boolean gameoverUIActive = false;
         private MenuButton goPlayAgainBtn, goMenuBtn;
 
+				private final Map<String, ColorRGBA> playerColors;
+
         // Пауза
         private boolean pauseActive = false;
         private Node pauseNode;
@@ -1678,6 +2434,9 @@ public class SnakeApp extends SimpleApplication {
         private final boolean solo;
         private final int mapIndex; // 0=Зелёная, 1=Пустыня, 2=Ямы
         private final boolean cubesEnabled;
+
+				private int lastW = -1;
+				private int lastH = -1;
 
         private final List<SnakePlayer> snakes = new ArrayList<>();
         private Node foodNode, wallNode, cloudNode, worldNode, cubeNode;
@@ -1762,7 +2521,7 @@ public class SnakeApp extends SimpleApplication {
         // сетевая синхронизация времени суток
         private float dayNetTimer = 0f;
         private static final float DAY_NET_INTERVAL = 5f; // каждые 5 сек хост отсылает время
-				
+
 				private boolean sandstormActive = false;
 				private float sandstormTimer = 0f;
 				private static final float SANDSTORM_DURATION = 30f;
@@ -1949,7 +2708,7 @@ public class SnakeApp extends SimpleApplication {
         private final Random eventRng = new Random();
         private Node rainDropNode;
         private final List<RainDrop> rainDrops = new ArrayList<>();
-				
+
         // Вода на полу
         private final List<WaterPuddle> waterPuddles = new ArrayList<>();
         private Node waterNode;
@@ -2045,9 +2804,10 @@ public class SnakeApp extends SimpleApplication {
 
         private final List<PitData> pits = new ArrayList<>();
 
-        public GameState(String myNick, List<String> allPlayers, int myIndex, boolean solo,
-                         boolean isHost, DatagramSocket socket, String hostAddress, int hostPort,
-                         List<InetSocketAddress> clients, int mapIndex, boolean cubesEnabled) {
+				public GameState(String myNick, List<String> allPlayers, int myIndex, boolean solo,
+												 boolean isHost, DatagramSocket socket, String hostAddress, int hostPort,
+												 List<InetSocketAddress> clients, int mapIndex, boolean cubesEnabled,
+												 Map<String, ColorRGBA> playerColors) {
             this.myNick     = myNick;
             this.allPlayers = allPlayers != null ? allPlayers : Collections.singletonList(myNick);
             this.myIndex    = myIndex < 0 ? 0 : myIndex;
@@ -2060,6 +2820,7 @@ public class SnakeApp extends SimpleApplication {
             this.mapIndex   = mapIndex;
 						this.mapHalf = (mapIndex == 0) ? 60f : 40f;
             this.cubesEnabled = cubesEnabled;
+						this.playerColors = playerColors != null ? playerColors : new HashMap<>();
         }
 
         @Override
@@ -2099,7 +2860,7 @@ public class SnakeApp extends SimpleApplication {
             if (!solo) initNetwork();
             // ── День/Ночь: инициализируем после всей сцены ──
             initDayNightLighting();
-						
+
 						// Синхронизация ям на карте 2
 						if (mapIndex == 2 && isHost) {
 								broadcastPitsState();
@@ -2108,7 +2869,7 @@ public class SnakeApp extends SimpleApplication {
             rainBallNode = new Node("RainBalls"); rootNode.attachChild(rainBallNode);
             rainDropNode = new Node("RainDrops"); rootNode.attachChild(rainDropNode);
             waterNode    = new Node("Water");     rootNode.attachChild(waterNode);
-						
+
 						sandParticleNode = new Node("SandParticles");
 						rootNode.attachChild(sandParticleNode);
         }
@@ -2243,8 +3004,20 @@ public class SnakeApp extends SimpleApplication {
             rootNode.detachAllChildren(); guiNode.detachAllChildren();
             inputManager.clearMappings();
             stateManager.detach(bulletAppState); stateManager.detach(this);
-            stateManager.attach(new GameState(myNick, allPlayers, myIndex, solo, isHost,
-                    null, hostAddress, hostPort, clients, mapIndex, cubesEnabled));
+						stateManager.attach(new GameState(
+										myNick,
+										allPlayers,
+										myIndex,
+										solo,
+										isHost,
+										null,
+										hostAddress,
+										hostPort,
+										clients,
+										selectedMap,
+										cubesEnabled,
+										new HashMap<>()
+						));
         }
 
         // ── Физика ────────────────────────────────────────────────────────
@@ -2389,7 +3162,7 @@ public class SnakeApp extends SimpleApplication {
                 }
             }
         }
-				
+
 				// GameState наст-щик доп сюда новые методы
 				// private void sendPause(boolean pause) {
 						// if (!solo && isHost) {
@@ -2567,7 +3340,7 @@ public class SnakeApp extends SimpleApplication {
 								buildTerrainFloor(space);
 						} else {
 								// старая логика для других карт
-								// addBox(new Vector3f(0, -0.4f, 0), new Vector3f(mapHalf, 0.2f, mapHalf), 
+								// addBox(new Vector3f(0, -0.4f, 0), new Vector3f(mapHalf, 0.2f, mapHalf),
 											 // unshaded(assetManager, floorColor), space);
 								Geometry floorGeo = new Geometry("Floor", new Box(mapHalf, 0.2f, mapHalf));
 								this.flatFloorGeo = floorGeo;
@@ -2590,11 +3363,11 @@ public class SnakeApp extends SimpleApplication {
 				private void buildTerrainFloor(PhysicsSpace space) {
 						float gridSize = mapHalf * 2f;   // покрывает всю игровую зону
 						int resolution = 80; // количество вершин
-						
+
 						Mesh terrainMesh = new Mesh();
 						Vector3f[] vertices = new Vector3f[(resolution + 1) * (resolution + 1)];
 						int[] indices = new int[resolution * resolution * 6];
-						
+
 						// Генерируем вершины
 						for (int iz = 0; iz <= resolution; iz++) {
 								for (int ix = 0; ix <= resolution; ix++) {
@@ -2604,7 +3377,7 @@ public class SnakeApp extends SimpleApplication {
 										vertices[iz * (resolution + 1) + ix] = new Vector3f(x, y, z);
 								}
 						}
-						
+
 						// Генерируем индексы
 						int idx = 0;
 						for (int iz = 0; iz < resolution; iz++) {
@@ -2613,17 +3386,17 @@ public class SnakeApp extends SimpleApplication {
 										int v1 = v0 + 1;
 										int v2 = v0 + (resolution + 1);
 										int v3 = v2 + 1;
-										
+
 										indices[idx++] = v0;
 										indices[idx++] = v2;
 										indices[idx++] = v1;
-										
+
 										indices[idx++] = v1;
 										indices[idx++] = v2;
 										indices[idx++] = v3;
 								}
 						}
-						
+
 						float[] colorArray = new float[(resolution + 1) * (resolution + 1) * 4];
 						for (int iz = 0; iz <= resolution; iz++) {
 								for (int ix = 0; ix <= resolution; ix++) {
@@ -2677,14 +3450,14 @@ public class SnakeApp extends SimpleApplication {
 						terrainMesh.setBuffer(com.jme3.scene.VertexBuffer.Type.Normal, 3,
 								BufferUtils.createFloatBuffer(normals));
 
-						terrainMesh.setBuffer(VertexBuffer.Type.Color, 4, BufferUtils.createFloatBuffer(colorArray));	
-					
-						terrainMesh.setBuffer(VertexBuffer.Type.Position, 3, 
+						terrainMesh.setBuffer(VertexBuffer.Type.Color, 4, BufferUtils.createFloatBuffer(colorArray));
+
+						terrainMesh.setBuffer(VertexBuffer.Type.Position, 3,
 																 BufferUtils.createFloatBuffer(vertices));
-						terrainMesh.setBuffer(VertexBuffer.Type.Index, 3, 
+						terrainMesh.setBuffer(VertexBuffer.Type.Index, 3,
 																 BufferUtils.createIntBuffer(indices));
 						terrainMesh.updateBound();
-						
+
 						Geometry terrain = new Geometry("TerrainFloor", terrainMesh);
 						this.terrainFloorGeo = terrain;
 						// Используем UnshaderVertexColor чтобы цвет вершин совпадал с внешней землёй (без зависимости от угла освещения)
@@ -2700,7 +3473,7 @@ public class SnakeApp extends SimpleApplication {
 						terrain.setMaterial(terrainMat);
 						terrain.setShadowMode(RenderQueue.ShadowMode.Receive);
 						wallNode.attachChild(terrain);
-						
+
 						// Физический коллайдер для пола (упрощённый)
 						RigidBodyControl floorPhy = new RigidBodyControl(
 								new MeshCollisionShape(terrainMesh), 0f);
@@ -3015,11 +3788,11 @@ public class SnakeApp extends SimpleApplication {
 						cloudNode = new Node("Clouds");
 						rootNode.attachChild(cloudNode);
 						if (mapIndex == 2) return;
-						
+
 						Material cloudMat = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
 						cloudMat.setColor("Color", new ColorRGBA(1f, 1f, 1f, 0.55f));
 						cloudMat.getAdditionalRenderState().setBlendMode(RenderState.BlendMode.Alpha);
-						
+
 						Random rng = new Random(42);
 						for (int i = 0; i < 25; i++) {
 								Node cloud = new Node("Cloud" + i);
@@ -3038,7 +3811,7 @@ public class SnakeApp extends SimpleApplication {
 								third.setLocalTranslation(-baseRadius * 0.6f, baseRadius * 0.2f, 0);
 								third.setMaterial(cloudMat);
 								cloud.attachChild(third);
-								
+
 								cloud.setLocalTranslation(
 										(rng.nextFloat() - 0.5f) * mapHalf * 3f,
 										14f + rng.nextFloat() * 10f,
@@ -3060,16 +3833,34 @@ public class SnakeApp extends SimpleApplication {
         private static final float[] START_ANGLES = {FastMath.PI, 0f, FastMath.HALF_PI, -FastMath.HALF_PI};
 
 				private void createSnakes() {
+
 						for (int i = 0; i < allPlayers.size(); i++) {
+
 								Node sn = new Node("Snake" + i);
 								rootNode.attachChild(sn);
-								ColorRGBA snakeColor = (i == myIndex) ? selectedSnakeColor : SNAKE_COLORS[i % SNAKE_COLORS.length];
+
+								String nick = allPlayers.get(i);
+
+								ColorRGBA snakeColor = playerColors.getOrDefault(
+												nick,
+												SNAKE_COLORS[i % SNAKE_COLORS.length]
+								);
+
 								Material mat = litMat(assetManager, snakeColor);
+
 								SnakePlayer sp = new SnakePlayer(
-												allPlayers.get(i), START_POS[i % START_POS.length].clone(),
-												START_ANGLES[i % START_ANGLES.length], mat, sn, assetManager, guiNode, cam,
+												nick,
+												START_POS[i % START_POS.length].clone(),
+												START_ANGLES[i % START_ANGLES.length],
+												mat,
+												sn,
+												assetManager,
+												guiNode,
+												cam,
 												bulletAppState.getPhysicsSpace(),
-												this);   // передаём GameState
+												this
+								);
+
 								snakes.add(sp);
 						}
 				}
@@ -3959,11 +4750,11 @@ public class SnakeApp extends SimpleApplication {
 						mat.setColor("Color", new ColorRGBA(0.16f, 0.20f, 0.24f, 0.58f));
 						mat.getAdditionalRenderState().setBlendMode(com.jme3.material.RenderState.BlendMode.Alpha);
 						geo.setMaterial(mat);
-						
+
 						// Устанавливаем высоту в зависимости от карты
 						float groundY = getSurfaceHeight(x, z);   // используем свой метод рельефа
 						geo.setLocalTranslation(x, groundY + 0.1f, z);   // чуть выше земли
-						
+
 						geo.setLocalScale(0.12f, 0.008f, 0.09f);
 						waterNode.attachChild(geo);
 						waterPuddles.add(new WaterPuddle(geo, x, z, radius));
@@ -4689,7 +5480,7 @@ public class SnakeApp extends SimpleApplication {
             geo.addControl(phy); bulletAppState.getPhysicsSpace().add(phy);
 
             blackCubes.add(new BlackCube(id, geo, phy));
-						
+
 						if (solo || isHost) {
 								bulletAppState.getPhysicsSpace().add(phy);
 						}
@@ -5022,6 +5813,20 @@ public class SnakeApp extends SimpleApplication {
             for (SnakePlayer sp:snakes) sp.updateNameTag(cam);
 						updateCactusRespawns(tpf);
             updateBlackCubes(tpf);
+						
+						if (lastW == -1 || lastH == -1) {
+								lastW = cam.getWidth();
+								lastH = cam.getHeight();
+						}
+
+						if (cam.getWidth() != lastW || cam.getHeight() != lastH) {
+
+								lastW = cam.getWidth();
+								lastH = cam.getHeight();
+
+								refreshGameGuiLayout();
+						}
+						
         }
 
         /** Обновление анимации шипов (карта 2) — вызывается каждый кадр */
@@ -5084,6 +5889,54 @@ public class SnakeApp extends SimpleApplication {
                 }
             }
         }
+
+				private void refreshGameGuiLayout() {
+
+						float W = cam.getWidth();
+						float H = cam.getHeight();
+
+						// Таймер сверху по центру
+						if (gameTimerText != null) {
+								gameTimerText.setLocalTranslation(
+												W / 2f - gameTimerText.getLineWidth() / 2f,
+												H - 22f,
+												0f
+								);
+						}
+
+						// Счёт игроков слева сверху
+						if (huds != null) {
+								for (int i = 0; i < huds.size(); i++) {
+										BitmapText hudLine = huds.get(i);
+
+										if (hudLine != null) {
+												hudLine.setLocalTranslation(
+																14f,
+																H - 38f - i * 30f,
+																0f
+												);
+										}
+								}
+						}
+
+						// Центральное сообщение
+						if (centerMsg != null) {
+								centerMsg.setLocalTranslation(
+												W / 2f - centerMsg.getLineWidth() / 2f,
+												H / 2f,
+												0f
+								);
+						}
+
+						// Индикатор рывка снизу справа
+						if (dashCooldownText != null) {
+								dashCooldownText.setLocalTranslation(
+												W - 260f,
+												40f,
+												0f
+								);
+						}
+				}
 
         private void updatePitsVisualOnly(float tpf) {
             if (mapIndex != 2) return;
@@ -5160,7 +6013,7 @@ public class SnakeApp extends SimpleApplication {
                 }
             }
         }
-				
+
 				// Проверка столкновений
 				private void checkCollisions(float tpf) {
 						if (!solo && !isHost) return; // клиенты не проверяют коллизии локально
@@ -5246,7 +6099,7 @@ public class SnakeApp extends SimpleApplication {
 								Vector3f cpos = cd.trunkGeo.getWorldTranslation();
 								if (h.distance(cpos) < 1.2f) {
 										cd.hit = true;
-										
+
 										cd.respawnTimer = 60f;   // 15 секунд до восстановления
 										cd.queuedForRespawn = true;
 
@@ -5533,7 +6386,7 @@ public class SnakeApp extends SimpleApplication {
             }
             // Купол неба следует за камерой
             if (skyDome != null) skyDome.setLocalTranslation(cam.getLocation());
-						
+
 						updateGridAppearance();
         }
 
@@ -5718,7 +6571,7 @@ public class SnakeApp extends SimpleApplication {
             inputManager.setCursorVisible(true);  // восстанавливаем курсор при выходе в меню
             stateManager.detach(bulletAppState); stateManager.detach(this);
             stateManager.attach(new MainMenuState());
-						
+
 						if (sandstormOverlayGeo != null) {
 								guiNode.detachChild(sandstormOverlayGeo);
 								sandstormOverlayGeo = null;
@@ -5808,7 +6661,7 @@ public class SnakeApp extends SimpleApplication {
 								this.geo = g; this.vx = vx; this.vy = vy; this.vz = vz; this.life = life;
 						}
 				}
-				
+
 				static class RainBall {
 						final Geometry geo;
 						final int id;
@@ -5862,7 +6715,7 @@ public class SnakeApp extends SimpleApplication {
         private float currentSpeed = 0f;
         private static final float ACCEL = 18f;
         private static final float DECEL = 12f;
-				
+
 				private float accelMult = 1.0f;
 				private float decelMult = 1.0f;
 				private float turnMult  = 1.0f;
@@ -5894,7 +6747,7 @@ public class SnakeApp extends SimpleApplication {
 
             Vector3f back = direction.negate();
             for (int i=0;i<4;i++) addSegment(startPos.add(back.mult(i*0.55f)));
-						
+
 						for (int i = 0; i < segPos.size(); i++) {
 								Vector3f pos = segPos.get(i);
 								float terrainHeight = gameState.getSurfaceHeight(pos.x, pos.z);
@@ -5953,7 +6806,7 @@ public class SnakeApp extends SimpleApplication {
 						if (dead) return;
 						if (movingInput) currentSpeed = Math.min(maxSpeed, currentSpeed + ACCEL * accelMult * tpf);
 						else             currentSpeed = Math.max(0f,         currentSpeed - DECEL * decelMult * tpf);
-						
+
 						if (iceMode) {
 								// === ЛЕДЯНОЙ РЕЖИМ ===
 								// 1. Инерция сохраняется: скорость отдельно от ввода
@@ -6138,7 +6991,7 @@ public class SnakeApp extends SimpleApplication {
 						}
 						return closest;
 				}
-				
+
 				// Приклеить фрагмент кактуса к змее
 				public void attachCactusFragment(Node fragNode, Vector3f worldPos) {
 						RigidBodyControl phy = fragNode.getControl(RigidBodyControl.class);
@@ -6169,10 +7022,10 @@ public class SnakeApp extends SimpleApplication {
 						float along = toFrag.dot(bodyDir);
 						float side  = toFrag.dot(right);
 						float up    = toFrag.y * 0.15f;
-						
+
 						// Радиус сегмента + небольшой контактный зазор
 						float placementDist = SEG_R + 0.12f;
-						
+
 						// Нормализуем направление от центра сегмента к точке контакта
 						Vector3f dirToFrag = toFrag.clone();
 						float len = dirToFrag.length();
@@ -6208,7 +7061,7 @@ public class SnakeApp extends SimpleApplication {
 						cactusAttachments.add(new CactusAttachment(fragNode, segIdx, along, side, up,
 										localRot, 8.0f));
 				}
-				
+
 				// обновление прилипших фрагментов (вызывать в update)
 				private void updateCactusAttachments(float tpf) {
 						for (int i = cactusAttachments.size() - 1; i >= 0; i--) {
@@ -6244,7 +7097,7 @@ public class SnakeApp extends SimpleApplication {
 								att.node.setLocalRotation(segWorldRot.mult(att.localRotation));
 						}
 				}
-				
+
 				// очистка прилипших фрагментов (при смерти/выходе)
 				private void cleanupCactusAttachments() {
 						for (CactusAttachment att : cactusAttachments) {
