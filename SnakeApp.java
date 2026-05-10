@@ -196,7 +196,16 @@ public class SnakeApp extends SimpleApplication {
     static ColorRGBA selectedSnakeColor = new ColorRGBA(0.15f, 0.9f, 0.3f, 1f);
     static String savedNickname = getSystemUsername();
     // Настройки графики
+    static final int SHADOW_QUALITY_OFF    = -1;
+    static final int SHADOW_QUALITY_LOW    = 0;
+    static final int SHADOW_QUALITY_MEDIUM = 1;
+    static final int SHADOW_QUALITY_HIGH   = 2;
+
+    // shadowsEnabled оставлен для совместимости со старым settings.properties.
+    // Реальный режим теперь хранится в shadowQuality:
+    // ВЫКЛ -> НИЗКИЕ -> СРЕДНИЕ -> ВЫСОКИЕ.
     static boolean shadowsEnabled   = true;
+    static int shadowQuality        = SHADOW_QUALITY_MEDIUM;
     static boolean particlesEnabled = true;
     static boolean fogEnabled       = true;
     static boolean bloomEnabled     = true;
@@ -231,6 +240,11 @@ public class SnakeApp extends SimpleApplication {
             musicVolume        = parseFloatOrDefault(p.getProperty("musicVolume",  "0.5"), 0.5f, "Settings.musicVolume");
             savedNickname      = safeString(p.getProperty("nickname", getSystemUsername()), getSystemUsername());
             shadowsEnabled     = Boolean.parseBoolean(p.getProperty("shadowsEnabled",   "true"));
+            shadowQuality      = clampShadowQuality(parseIntOrDefault(
+                    p.getProperty("shadowQuality", shadowsEnabled ? String.valueOf(SHADOW_QUALITY_MEDIUM) : String.valueOf(SHADOW_QUALITY_OFF)),
+                    SHADOW_QUALITY_MEDIUM,
+                    "Settings.shadowQuality"));
+            shadowsEnabled     = shadowQuality != SHADOW_QUALITY_OFF;
             particlesEnabled   = Boolean.parseBoolean(p.getProperty("particlesEnabled", "true"));
             fogEnabled         = Boolean.parseBoolean(p.getProperty("fogEnabled",       "true"));
             bloomEnabled       = Boolean.parseBoolean(p.getProperty("bloomEnabled",     "true"));
@@ -249,7 +263,10 @@ public class SnakeApp extends SimpleApplication {
             p.setProperty("effectVolume",  String.valueOf(effectVolume));
             p.setProperty("musicVolume",   String.valueOf(musicVolume));
             p.setProperty("nickname",      safeString(nickname, safeString(savedNickname, getSystemUsername())));
+            shadowQuality = clampShadowQuality(shadowQuality);
+            shadowsEnabled = shadowQuality != SHADOW_QUALITY_OFF;
             p.setProperty("shadowsEnabled",   String.valueOf(shadowsEnabled));
+            p.setProperty("shadowQuality",    String.valueOf(shadowQuality));
             p.setProperty("particlesEnabled", String.valueOf(particlesEnabled));
             p.setProperty("fogEnabled",       String.valueOf(fogEnabled));
             p.setProperty("bloomEnabled",     String.valueOf(bloomEnabled));
@@ -276,6 +293,132 @@ public class SnakeApp extends SimpleApplication {
     public static final ColorRGBA BTN_NORMAL  = new ColorRGBA(0.067f, 0.114f, 0.243f, 0.9f);
     public static final ColorRGBA BTN_HOVER   = new ColorRGBA(0.102f, 0.20f, 0.50f, 0.97f);
     public static final ColorRGBA BTN_PRESS   = new ColorRGBA(0.035f, 0.055f, 0.122f, 1f);
+
+    static int clampShadowQuality(int q) {
+        return Math.max(SHADOW_QUALITY_OFF, Math.min(q, SHADOW_QUALITY_HIGH));
+    }
+
+    static int nextShadowQuality(int q) {
+        q = clampShadowQuality(q);
+        return q >= SHADOW_QUALITY_HIGH ? SHADOW_QUALITY_OFF : q + 1;
+    }
+
+    static String shadowQualityButtonText() {
+        switch (clampShadowQuality(shadowQuality)) {
+            case SHADOW_QUALITY_OFF:    return "ТЕНИ ВЫКЛ";
+            case SHADOW_QUALITY_LOW:    return "ТЕНИ НИЗКИЕ";
+            case SHADOW_QUALITY_MEDIUM: return "ТЕНИ СРЕДНИЕ";
+            case SHADOW_QUALITY_HIGH:   return "ТЕНИ ВЫСОКИЕ";
+            default:                    return "ТЕНИ СРЕДНИЕ";
+        }
+    }
+
+    static ColorRGBA shadowQualityAccentColor() {
+        switch (clampShadowQuality(shadowQuality)) {
+            case SHADOW_QUALITY_OFF:    return DANGER;
+            case SHADOW_QUALITY_LOW:    return TEXT_DIM;
+            case SHADOW_QUALITY_MEDIUM: return ACCENT2;
+            case SHADOW_QUALITY_HIGH:   return ACCENT;
+            default:                    return ACCENT2;
+        }
+    }
+
+    static ColorRGBA shadowQualityBgColor() {
+        switch (clampShadowQuality(shadowQuality)) {
+            case SHADOW_QUALITY_OFF:
+                return new ColorRGBA(0.18f, 0.045f, 0.055f, 0.92f);
+            case SHADOW_QUALITY_LOW:
+                return BTN_NORMAL;
+            case SHADOW_QUALITY_MEDIUM:
+                return new ColorRGBA(0.035f, 0.10f, 0.16f, 0.92f);
+            case SHADOW_QUALITY_HIGH:
+                return new ColorRGBA(0.04f, 0.14f, 0.08f, 0.9f);
+            default:
+                return BTN_NORMAL;
+        }
+    }
+
+    static int shadowMapSizeForQuality() {
+        switch (clampShadowQuality(shadowQuality)) {
+            case SHADOW_QUALITY_OFF:    return 0;
+            case SHADOW_QUALITY_LOW:    return 512;
+            case SHADOW_QUALITY_MEDIUM: return 1024;
+            case SHADOW_QUALITY_HIGH:   return 2048;
+            default:                    return 1024;
+        }
+    }
+
+    static int shadowSplitsForQuality() {
+        switch (clampShadowQuality(shadowQuality)) {
+            case SHADOW_QUALITY_OFF:    return 0;
+            case SHADOW_QUALITY_LOW:    return 1;
+            case SHADOW_QUALITY_MEDIUM: return 2;
+            case SHADOW_QUALITY_HIGH:   return 3;
+            default:                    return 2;
+        }
+    }
+
+    static EdgeFilteringMode shadowFilteringForQuality() {
+        switch (clampShadowQuality(shadowQuality)) {
+            case SHADOW_QUALITY_OFF:    return EdgeFilteringMode.Nearest;
+            case SHADOW_QUALITY_LOW:    return EdgeFilteringMode.Nearest;
+            case SHADOW_QUALITY_MEDIUM: return EdgeFilteringMode.PCF4;
+            case SHADOW_QUALITY_HIGH:   return EdgeFilteringMode.PCFPOISSON;
+            default:                    return EdgeFilteringMode.PCF4;
+        }
+    }
+
+    static float shadowIntensityForQuality() {
+        switch (clampShadowQuality(shadowQuality)) {
+            case SHADOW_QUALITY_OFF:    return 0f;
+            case SHADOW_QUALITY_LOW:    return 0.55f;
+            case SHADOW_QUALITY_MEDIUM: return 0.65f;
+            case SHADOW_QUALITY_HIGH:   return 0.72f;
+            default:                    return 0.65f;
+        }
+    }
+
+    static float shadowZExtendForQuality() {
+        switch (clampShadowQuality(shadowQuality)) {
+            case SHADOW_QUALITY_OFF:    return 0f;
+            case SHADOW_QUALITY_LOW:    return 65f;
+            case SHADOW_QUALITY_MEDIUM: return 90f;
+            case SHADOW_QUALITY_HIGH:   return 120f;
+            default:                    return 90f;
+        }
+    }
+
+    static float shadowZFadeForQuality() {
+        switch (clampShadowQuality(shadowQuality)) {
+            case SHADOW_QUALITY_OFF:    return 0f;
+            case SHADOW_QUALITY_LOW:    return 8f;
+            case SHADOW_QUALITY_MEDIUM: return 12f;
+            case SHADOW_QUALITY_HIGH:   return 15f;
+            default:                    return 12f;
+        }
+    }
+
+    static DirectionalLightShadowRenderer createShadowRendererForCurrentQuality(AssetManager am, DirectionalLight light) {
+        shadowQuality = clampShadowQuality(shadowQuality);
+        shadowsEnabled = shadowQuality != SHADOW_QUALITY_OFF;
+        if (!shadowsEnabled || shadowQuality == SHADOW_QUALITY_OFF || am == null || light == null) return null;
+        try {
+            DirectionalLightShadowRenderer renderer = new DirectionalLightShadowRenderer(
+                    am,
+                    shadowMapSizeForQuality(),
+                    shadowSplitsForQuality()
+            );
+            renderer.setLight(light);
+            renderer.setShadowIntensity(shadowIntensityForQuality());
+            renderer.setEdgeFilteringMode(shadowFilteringForQuality());
+            renderer.setShadowZExtend(shadowZExtendForQuality());
+            renderer.setShadowZFadeLength(shadowZFadeForQuality());
+            return renderer;
+        } catch (Exception e) {
+            logSafe("Graphics.shadow.create", e);
+            return null;
+        }
+    }
 
     // Глобальный менеджер фоновой музыки — один трек на всё время игры
     static class MusicManager {
@@ -406,7 +549,7 @@ public class SnakeApp extends SimpleApplication {
         }
     }
 
-    static BitmapFont loadFont(AssetManager am) {
+    public static BitmapFont loadFont(AssetManager am) {
         if (am == null) { logSafe("Font", "AssetManager is null"); return null; }
         try { return am.loadFont("Fonts/bitmap.fnt"); }
         catch (Exception e) {
@@ -894,6 +1037,200 @@ public class SnakeApp extends SimpleApplication {
         String previewImage();
         ColorRGBA accentColor();
         MapRuntimeSettings settings();
+
+        // true = карта сама строит пол, стены, препятствия и свою мини-игру.
+        // false = SnakeApp строит стандартную арену как раньше.
+        default boolean overridesArena() { return false; }
+
+        // true = карта сама управляет камерой. Например, режим 2D сверху.
+        default boolean overridesCamera() { return false; }
+
+				// Выключение или включение цикла дня и ночи
+				default boolean overridesDayNight() { return false; }
+
+        // Вызывается вместо buildArena(), если overridesArena() == true.
+        default void buildWorld(MapContext ctx) {}
+
+        // Вызывается после создания змейки, еды, HUD и сети.
+        default void onStart(MapContext ctx) {}
+
+        // Каждый кадр на всех машинах: хост, клиент, соло.
+        default void update(MapContext ctx, float tpf) {}
+
+        // Авторитетная логика карты. Для мультиплеера лучше держать ловушки,
+        // урон, победу, таймеры и спавн именно здесь.
+        default void hostUpdate(MapContext ctx, float tpf) {}
+
+        // Клиентская визуальная логика карты.
+        default void clientUpdate(MapContext ctx, float tpf) {}
+
+        // Камера карты, если overridesCamera() == true.
+        default void updateCamera(MapContext ctx, float tpf) {}
+
+        // Универсальные сетевые события карты.
+        default void onMapNetMessage(MapContext ctx, String payload) {}
+
+        // Очистка узлов/эффектов карты при выходе из матча.
+        default void cleanup(MapContext ctx) {}
+    }
+
+    public static class MapContext {
+        public final GameState game;
+        public final SimpleApplication app;
+        public final Node rootNode;
+        public final Node guiNode;
+        public final AssetManager assetManager;
+        public final InputManager inputManager;
+        public final Camera camera;
+        public final PhysicsSpace physicsSpace;
+        public final MapRuntimeSettings settings;
+        public final String mapId;
+        public final boolean solo;
+        public final boolean host;
+        public final int myIndex;
+        public final List<String> players;
+        private final List<RigidBodyControl> createdRigidBodies = new CopyOnWriteArrayList<>();
+
+        public MapContext(GameState game,
+                          SimpleApplication app,
+                          Node rootNode,
+                          Node guiNode,
+                          AssetManager assetManager,
+                          InputManager inputManager,
+                          Camera camera,
+                          PhysicsSpace physicsSpace,
+                          MapRuntimeSettings settings,
+                          String mapId,
+                          boolean solo,
+                          boolean host,
+                          int myIndex,
+                          List<String> players) {
+            this.game = game;
+            this.app = app;
+            this.rootNode = rootNode;
+            this.guiNode = guiNode;
+            this.assetManager = assetManager;
+            this.inputManager = inputManager;
+            this.camera = camera;
+            this.physicsSpace = physicsSpace;
+            this.settings = settings == null ? new MapRuntimeSettings() : settings;
+            this.mapId = safeString(mapId, "unknown");
+            this.solo = solo;
+            this.host = host;
+            this.myIndex = myIndex;
+            this.players = players != null ? players : Collections.emptyList();
+        }
+
+        public Material lit(ColorRGBA color) {
+            return SnakeApp.litMat(assetManager, color);
+        }
+
+        public Material unshaded(ColorRGBA color) {
+            return SnakeApp.unshaded(assetManager, color);
+        }
+
+				public void setMusic(String track, float volume) {
+						SnakeApp.MusicManager.play(assetManager, rootNode, track, volume);
+				}
+
+        public Geometry addStaticBox(Node parent, String name, Vector3f pos, Vector3f half, ColorRGBA color) {
+            Node target = parent != null ? parent : rootNode;
+            if (target == null || half == null || pos == null) return null;
+
+            Geometry g = new Geometry(safeString(name, "MapBox"), new Box(half.x, half.y, half.z));
+            g.setMaterial(lit(color));
+            g.setLocalTranslation(pos);
+            g.setShadowMode(RenderQueue.ShadowMode.CastAndReceive);
+            target.attachChild(g);
+
+            if (physicsSpace != null) {
+                RigidBodyControl phy = new RigidBodyControl(new BoxCollisionShape(half), 0);
+                g.addControl(phy);
+                physicsSpace.add(phy);
+                createdRigidBodies.add(phy);
+            }
+            return g;
+        }
+
+        public Geometry addVisualBox(Node parent, String name, Vector3f pos, Vector3f half, ColorRGBA color) {
+            Node target = parent != null ? parent : rootNode;
+            if (target == null || half == null || pos == null) return null;
+            Geometry g = new Geometry(safeString(name, "MapVisualBox"), new Box(half.x, half.y, half.z));
+            g.setMaterial(lit(color));
+            g.setLocalTranslation(pos);
+            g.setShadowMode(RenderQueue.ShadowMode.CastAndReceive);
+            target.attachChild(g);
+            return g;
+        }
+
+				public float getDayBrightness() {
+						return game != null ? game.getDayBrightness() : 1f;
+				}
+
+        public Geometry addStaticSphere(Node parent, String name, Vector3f pos, float radius, ColorRGBA color) {
+            Node target = parent != null ? parent : rootNode;
+            if (target == null || pos == null) return null;
+            float r = Math.max(0.05f, radius);
+            Geometry g = new Geometry(safeString(name, "MapSphere"), new Sphere(16, 16, r));
+            g.setMaterial(lit(color));
+            g.setLocalTranslation(pos);
+            g.setShadowMode(RenderQueue.ShadowMode.CastAndReceive);
+            target.attachChild(g);
+            if (physicsSpace != null) {
+                RigidBodyControl phy = new RigidBodyControl(new SphereCollisionShape(r), 0);
+                g.addControl(phy);
+                physicsSpace.add(phy);
+                createdRigidBodies.add(phy);
+            }
+            return g;
+        }
+
+        public Vector3f getSnakeHead(int index) {
+            return game != null ? game.getSnakeHeadPos(index) : Vector3f.ZERO.clone();
+        }
+
+        public Vector3f getMySnakeHead() {
+            return getSnakeHead(myIndex);
+        }
+
+        public Vector3f getSnakeDirection(int index) {
+            return game != null ? game.getSnakeDirection(index) : Vector3f.UNIT_Z.clone();
+        }
+
+        public void sendMapEvent(String payload) {
+            if (game != null) game.sendMapEvent(payload);
+        }
+
+        public void killSnake(int index, String reason) {
+            if (game != null) game.killSnakeFromMap(index, reason);
+        }
+
+        public float mapHalf() {
+            return Math.max(25f, settings.mapHalf);
+        }
+
+        public boolean isHostLogic() {
+            return solo || host;
+        }
+
+        public void setStandardSnakesVisible(boolean visible) {
+            if (game != null) game.setStandardSnakesVisible(visible);
+        }
+
+        public void setCoreHudVisible(boolean visible) {
+            if (game != null) game.setCoreHudVisible(visible);
+        }
+
+        void cleanupCreatedPhysics() {
+            if (physicsSpace == null) {
+                createdRigidBodies.clear();
+                return;
+            }
+            for (RigidBodyControl body : snapshot(createdRigidBodies)) {
+                try { physicsSpace.remove(body); } catch (Exception e) { logSafe("MapContext.physics.remove", e); }
+            }
+            createdRigidBodies.clear();
+        }
     }
 
     public static class MapRuntimeSettings {
@@ -947,14 +1284,34 @@ public class SnakeApp extends SimpleApplication {
         final ColorRGBA accentColor;
         final MapRuntimeSettings settings;
         final boolean external;
+        final ExternalMapDef def;
+
+        LoadedMapInfo(ExternalMapDef def, boolean external) {
+            this(
+                    def == null ? "sandbox" : def.id(),
+                    def == null ? "SandBox" : def.displayName(),
+                    def == null ? "" : def.previewImage(),
+                    def == null ? ACCENT : def.accentColor(),
+                    def == null ? new MapRuntimeSettings() : def.settings(),
+                    external,
+                    def
+            );
+        }
 
         LoadedMapInfo(String id, String displayName, String previewImage, ColorRGBA accentColor, MapRuntimeSettings settings, boolean external) {
+            this(id, displayName, previewImage, accentColor, settings, external, null);
+        }
+
+        private LoadedMapInfo(String id, String displayName, String previewImage,
+                              ColorRGBA accentColor, MapRuntimeSettings settings,
+                              boolean external, ExternalMapDef def) {
             this.id = (id == null || id.isBlank()) ? "sandbox" : id;
             this.displayName = (displayName == null || displayName.isBlank()) ? this.id : displayName;
             this.previewImage = previewImage == null ? "" : previewImage;
             this.accentColor = accentColor == null ? ACCENT : accentColor;
             this.settings = settings == null ? new MapRuntimeSettings() : settings.copy();
             this.external = external;
+            this.def = def;
         }
     }
 
@@ -979,7 +1336,7 @@ public class SnakeApp extends SimpleApplication {
                             Class<?> cls = Class.forName(clsName, true, loader);
                             if (!ExternalMapDef.class.isAssignableFrom(cls)) continue;
                             ExternalMapDef def = (ExternalMapDef)cls.getDeclaredConstructor().newInstance();
-                            result.add(new LoadedMapInfo(def.id(), def.displayName(), def.previewImage(), def.accentColor(), def.settings(), true));
+                            result.add(new LoadedMapInfo(def, true));
                         } catch (Throwable t) {
                             System.out.println("[Maps] skip " + clsName + ": " + t.getMessage());
                         }
@@ -990,7 +1347,7 @@ public class SnakeApp extends SimpleApplication {
             }
 
             if (!result.isEmpty()) {
-                final List<String> preferredOrder = Arrays.asList("GreenArena", "DesertArena", "SpikePits");
+                final List<String> preferredOrder = Arrays.asList("GreenArena", "DesertArena", "SpikePits", "Classic2DSnake", "TurboRace");
                 result.sort(Comparator
                         .comparingInt((LoadedMapInfo m) -> {
                             int idx = preferredOrder.indexOf(m.id);
@@ -1133,6 +1490,7 @@ public class SnakeApp extends SimpleApplication {
         private final UiGrid.HitBox hitBox;
         private boolean hovered = false, pressed = false;
         private float cornerRadius = 6f;
+        private String currentText = "";
         private ColorRGBA accentColor;
         private ColorRGBA bgNormal, bgHover, bgPressed;
 
@@ -1146,6 +1504,7 @@ public class SnakeApp extends SimpleApplication {
             this.hitBox = UiGrid.placeExact(this.ownerNode, "LemurButton:" + safeString(text, "Button"), cx, cy, w, h, z);
             this.w = hitBox.w; this.h = hitBox.h;
             this.x = hitBox.x; this.y = hitBox.y;
+            this.currentText = safeString(text, "");
             this.accentColor = safeColor(textColor, TEXT);
             this.bgNormal = safeColor(bgNormal, BTN_NORMAL);
             this.bgHover = safeColor(bgHover, BTN_HOVER);
@@ -1168,9 +1527,10 @@ public class SnakeApp extends SimpleApplication {
             // Lemur использует верхнюю левую точку панели, поэтому y + h = topY.
             // Фон самой Lemur-кнопки делаем прозрачным: реальная форма кнопки —
             // кастомный mesh со скошенными углами. Текст/выравнивание остаются Lemur.
-            this.button = LemurUi.button(safeString(text, ""), hitBox.x, hitBox.y + hitBox.h, hitBox.w, hitBox.h, z, new ColorRGBA(0f,0f,0f,0f), this.accentColor, am);
+            this.button = LemurUi.button(currentText, hitBox.x, hitBox.y + hitBox.h, hitBox.w, hitBox.h, z, new ColorRGBA(0f,0f,0f,0f), this.accentColor, am);
             this.button.setName("Btn_" + safeString(text, "Button"));
             this.button.setBackground(new QuadBackgroundComponent(new ColorRGBA(0f, 0f, 0f, 0f), 0f, 0f, 0.02f, false));
+            fitTextToButton();
             if (guiNode != null) guiNode.attachChild(button);
 
             this.bgGeo = shapeGeo;
@@ -1241,7 +1601,32 @@ public class SnakeApp extends SimpleApplication {
             removeFromParentQuietly(button);
         }
 
-        void setText(String t) { button.setText(t); }
+        private void fitTextToButton() {
+            if (button == null) return;
+            String t = safeString(currentText, "");
+
+            // Автоуменьшение текста по ширине кнопки: длинные варианты вроде
+            // «ТЕНИ СРЕДНИЕ» и «ДЕТАЛИ КАРТ ВКЛ» больше не вылезают за края.
+            float maxSize = Math.max(10f, h * 0.43f);
+            float minSize = Math.max(8f, h * 0.27f);
+            float usableW = Math.max(24f, w - 18f);
+            float approxCharW = Math.max(0.52f, t.length() > 12 ? 0.50f : 0.56f);
+            float sizeByWidth = usableW / Math.max(1f, t.length() * approxCharW);
+            float fontSize = FastMath.clamp(Math.min(maxSize, sizeByWidth), minSize, maxSize);
+
+            button.setFontSize(fontSize);
+            button.setInsets(new com.simsilica.lemur.Insets3f(0f, 6f, 0f, 6f));
+            button.setTextHAlignment(com.simsilica.lemur.HAlignment.Center);
+            button.setTextVAlignment(com.simsilica.lemur.VAlignment.Center);
+        }
+
+        void setText(String t) {
+            currentText = safeString(t, "");
+            if (button != null) {
+                button.setText(currentText);
+                fitTextToButton();
+            }
+        }
         void nudgeText(float dx, float dy) {
             // Раньше двигался только BitmapText внутри старой кнопки.
             // У Lemur Button отдельный label скрыт внутри компонента, поэтому
@@ -1249,6 +1634,15 @@ public class SnakeApp extends SimpleApplication {
             // от своего hitbox и переставала нажиматься. Оставляем no-op.
         }
         void setAccentColor(ColorRGBA c) { accentColor = c; refreshColor(); }
+    }
+
+    static void updateShadowQualityButton(MenuButton b) {
+        if (b == null) return;
+        shadowQuality = clampShadowQuality(shadowQuality);
+        shadowsEnabled = shadowQuality != SHADOW_QUALITY_OFF;
+        b.setText(shadowQualityButtonText());
+        b.setAccentColor(shadowQualityAccentColor());
+        b.setBgNormal(shadowQualityBgColor());
     }
 
     // ---------- ползунок громкости: кастомный, без кривого drag у Lemur Slider ----------
@@ -2122,8 +2516,8 @@ public class SnakeApp extends SimpleApplication {
 						float row4Y = row3Y - (toggleH + toggleGapY);
 						float row5Y = row4Y - (toggleH + toggleGapY);
 
-						btnShadows = new MenuButton(shadowsEnabled ? "ТЕНИ ВКЛ" : "ТЕНИ ВЫКЛ", leftColX, row1Y, toggleW, toggleH,
-										shadowsEnabled ? new ColorRGBA(0.04f,0.14f,0.08f,0.9f) : BTN_NORMAL, BTN_HOVER, BTN_PRESS, shadowsEnabled ? ACCENT : TEXT_DIM, assetManager, settingsPanel, Z);
+						btnShadows = new MenuButton(shadowQualityButtonText(), leftColX, row1Y, toggleW, toggleH,
+										shadowQualityBgColor(), BTN_HOVER, BTN_PRESS, shadowQualityAccentColor(), assetManager, settingsPanel, Z);
 						btnParticles = new MenuButton(particlesEnabled ? "ЧАСТИЦЫ ВКЛ" : "ЧАСТИЦЫ ВЫКЛ", rightColX, row1Y, toggleW, toggleH,
 										particlesEnabled ? new ColorRGBA(0.04f,0.14f,0.08f,0.9f) : BTN_NORMAL, BTN_HOVER, BTN_PRESS, particlesEnabled ? ACCENT : TEXT_DIM, assetManager, settingsPanel, Z);
 						btnFog = new MenuButton(fogEnabled ? "ТУМАН ВКЛ" : "ТУМАН ВЫКЛ", leftColX, row2Y, toggleW, toggleH,
@@ -2199,6 +2593,7 @@ public class SnakeApp extends SimpleApplication {
             if (sfxSlider   != null) sfxSlider.setValue(effectVolume);
             if (musicSlider != null) musicSlider.setValue(musicVolume);
             MusicManager.setVolume(musicVolume);
+            updateShadowQualityButton(btnShadows);
         }
 
         private void startMenuMusic() {
@@ -2347,9 +2742,10 @@ public class SnakeApp extends SimpleApplication {
 														setSettingsTab(1);
 												} else if (activeSettingsTab == 1) {
 														if (btnShadows != null && btnShadows.onRelease(mx, my)) {
-																shadowsEnabled = !shadowsEnabled;
-																setToggleButton(btnShadows, shadowsEnabled, "ТЕНИ");
-																saveSettings(nickname.toString());
+														shadowQuality = nextShadowQuality(shadowQuality);
+														shadowsEnabled = shadowQuality != SHADOW_QUALITY_OFF;
+														updateShadowQualityButton(btnShadows);
+														saveSettings(nickname.toString());
 														} else if (btnParticles != null && btnParticles.onRelease(mx, my)) {
 																particlesEnabled = !particlesEnabled;
 																setToggleButton(btnParticles, particlesEnabled, "ЧАСТИЦЫ");
@@ -4198,6 +4594,8 @@ public class SnakeApp extends SimpleApplication {
         private final boolean cubesEnabled;
         private final MapRuntimeSettings mapSettings;
         private final LoadedMapInfo loadedMapInfo;
+        private ExternalMapDef mapDef;
+        private MapContext mapCtx;
         private float effectiveSnakeSpeed = 8f;
         private float effectiveTurnSpeed = 2.8f;
         private int effectiveMaxFood = 18;
@@ -4614,6 +5012,7 @@ public class SnakeApp extends SimpleApplication {
             this.mapIndex   = clampMapIndex(mapIndex);
             this.loadedMapInfo = getMapInfo(this.mapIndex);
             this.mapSettings = (loadedMapInfo != null && loadedMapInfo.settings != null) ? loadedMapInfo.settings.copy() : new MapRuntimeSettings();
+            this.mapDef = loadedMapInfo != null ? loadedMapInfo.def : null;
             this.mapHalf = Math.max(25f, mapSettings.mapHalf);
             this.effectiveSnakeSpeed = Math.max(2f, mapSettings.snakeSpeed);
             this.effectiveTurnSpeed = Math.max(0.5f, mapSettings.turnSpeed);
@@ -4649,10 +5048,35 @@ public class SnakeApp extends SimpleApplication {
             nextEventTimer = 20f + new Random().nextFloat() * 30f;
 
             setupPhysics();
+            mapCtx = new MapContext(
+                    this,
+                    app,
+                    rootNode,
+                    guiNode,
+                    assetManager,
+                    inputManager,
+                    cam,
+                    physicsSpaceOrNull(bulletAppState),
+                    mapSettings,
+                    loadedMapInfo != null ? loadedMapInfo.id : "unknown",
+                    solo,
+                    isHost,
+                    myIndex,
+                    allPlayers
+            );
             buildOuterWorld();
-            buildArena();
+            if (mapDef != null && mapDef.overridesArena()) {
+                // Даже если карта строит арену сама, старые системы SnakeApp
+                // всё ещё используют wallNode для обломков, смерти и некоторых эффектов.
+                wallNode = new Node("Walls");
+                rootNode.attachChild(wallNode);
+                try { mapDef.buildWorld(mapCtx); }
+                catch (Exception e) { logSafe("Map.buildWorld", e); buildArena(); }
+            } else {
+                buildArena();
+            }
             buildClouds();
-						if (mapIndex == 0) {
+						if (mapIndex == 0 && (mapDef == null || !mapDef.overridesArena())) {
 								buildTerrainGrid();
 						}
             createSnakes();
@@ -4681,6 +5105,10 @@ public class SnakeApp extends SimpleApplication {
             setupControls();
             loadSounds();
             if (!solo) initNetwork();
+            if (mapDef != null && mapCtx != null) {
+                try { mapDef.onStart(mapCtx); }
+                catch (Exception e) { logSafe("Map.onStart", e); }
+            }
             // ── День/Ночь: инициализируем после всей сцены ──
             initDayNightLighting();
 
@@ -5966,6 +6394,14 @@ public class SnakeApp extends SimpleApplication {
             if (visible) updatePlayerTabText();
         }
 
+				public float getDayBrightness() {
+						// dayNightTime в GameState — позиция в цикле [0, TOTAL_CYCLE)
+						float dayFactor = dayNightTime < DAY_DURATION
+								? FastMath.sin((dayNightTime / DAY_DURATION) * FastMath.PI)
+								: 0f;
+						return FastMath.clamp(dayFactor, 0f, 1f);
+				}
+
         private void updatePlayerTabText() {
             if (playerTabText == null) return;
             StringBuilder sb = new StringBuilder();
@@ -6393,17 +6829,9 @@ public class SnakeApp extends SimpleApplication {
 						}
 
 						if (SnakeApp.shadowsEnabled && SnakeApp.dynamicLightsEnabled && sunLight != null) {
-								try {
-										gameShadowRenderer = new DirectionalLightShadowRenderer(assetManager, 2048, 3);
-										gameShadowRenderer.setLight(sunLight);
-										gameShadowRenderer.setShadowIntensity(0.72f);
-										gameShadowRenderer.setEdgeFilteringMode(EdgeFilteringMode.PCFPOISSON);
-										gameShadowRenderer.setShadowZExtend(120f);
-										gameShadowRenderer.setShadowZFadeLength(15f);
+								gameShadowRenderer = SnakeApp.createShadowRendererForCurrentQuality(assetManager, sunLight);
+								if (gameShadowRenderer != null) {
 										vp.addProcessor(gameShadowRenderer);
-								} catch (Exception e) {
-										logSafe("Graphics.shadow.create", e);
-										gameShadowRenderer = null;
 								}
 						}
 
@@ -6559,8 +6987,9 @@ public class SnakeApp extends SimpleApplication {
 						// ── Графика ──
 						if (pauseActiveSettingsTab == 1) {
 								if (pauseBtnShadows != null && pauseBtnShadows.onRelease(mx, my)) {
-										SnakeApp.shadowsEnabled = !SnakeApp.shadowsEnabled;
-										setPauseToggleButton(pauseBtnShadows, SnakeApp.shadowsEnabled, "ТЕНИ");
+										SnakeApp.shadowQuality = SnakeApp.nextShadowQuality(SnakeApp.shadowQuality);
+										SnakeApp.shadowsEnabled = SnakeApp.shadowQuality != SnakeApp.SHADOW_QUALITY_OFF;
+										SnakeApp.updateShadowQualityButton(pauseBtnShadows);
 										applyGraphicsSettingsNow();
 
 								} else if (pauseBtnParticles != null && pauseBtnParticles.onRelease(mx, my)) {
@@ -6766,15 +7195,15 @@ public class SnakeApp extends SimpleApplication {
 						float row5Y = row4Y - (toggleH + toggleGapY);
 
 						pauseBtnShadows = new MenuButton(
-										shadowsEnabled ? "ТЕНИ ВКЛ" : "ТЕНИ ВЫКЛ",
+										shadowQualityButtonText(),
 										leftColX,
 										row1Y,
 										toggleW,
 										toggleH,
-										shadowsEnabled ? new ColorRGBA(0.04f, 0.14f, 0.08f, 0.9f) : BTN_NORMAL,
+										shadowQualityBgColor(),
 										BTN_HOVER,
 										BTN_PRESS,
-										shadowsEnabled ? ACCENT : TEXT_DIM,
+										shadowQualityAccentColor(),
 										assetManager,
 										pauseSettingsNode,
 										Z
@@ -7011,6 +7440,7 @@ public class SnakeApp extends SimpleApplication {
 						}
 
 						MusicManager.setVolume(musicVolume);
+						updateShadowQualityButton(pauseBtnShadows);
 				}
 
 				private void setPauseToggleButton(MenuButton b, boolean value, String title) {
@@ -7487,12 +7917,77 @@ public class SnakeApp extends SimpleApplication {
 												}
 										}
 										break;
+                case "MAP_EVT":
+                    if (p.length >= 3 && mapDef != null && mapCtx != null) {
+                        String eventMapId = p[1];
+                        if (loadedMapInfo != null && !loadedMapInfo.id.equals(eventMapId)) break;
+                        try {
+                            byte[] data = Base64.getUrlDecoder().decode(p[2]);
+                            String payload = new String(data, StandardCharsets.UTF_8);
+                            mapDef.onMapNetMessage(mapCtx, payload);
+                        } catch (Exception e) {
+                            logSafe("Map.netEvent", e);
+                        }
+                    }
+                    break;
                 case "WATER":
                     if (p.length>=4) {
                         float wx=Float.parseFloat(p[1]),wz=Float.parseFloat(p[2]),wr=Float.parseFloat(p[3]);
                         addWaterPuddle(wx, wz, wr);
                     } break;
             }
+        }
+
+        public Vector3f getSnakeHeadPos(int index) {
+            if (index < 0 || index >= snakes.size()) return Vector3f.ZERO.clone();
+            SnakePlayer sp = snakes.get(index);
+            if (sp == null) return Vector3f.ZERO.clone();
+            return sp.getHeadPos().clone();
+        }
+
+        public Vector3f getSnakeDirection(int index) {
+            if (index < 0 || index >= snakes.size()) return Vector3f.UNIT_Z.clone();
+            SnakePlayer sp = snakes.get(index);
+            if (sp == null) return Vector3f.UNIT_Z.clone();
+            Vector3f dir = sp.getDirection();
+            return dir == null ? Vector3f.UNIT_Z.clone() : dir.clone();
+        }
+
+        public void setStandardSnakesVisible(boolean visible) {
+            Spatial.CullHint hint = visible ? Spatial.CullHint.Inherit : Spatial.CullHint.Always;
+            for (SnakePlayer sp : snapshot(snakes)) {
+                if (sp != null) sp.setVisible(visible);
+            }
+        }
+
+        public void setCoreHudVisible(boolean visible) {
+            Spatial.CullHint hint = visible ? Spatial.CullHint.Inherit : Spatial.CullHint.Always;
+            for (BitmapText h : snapshot(huds)) if (h != null) h.setCullHint(hint);
+            if (gameTimerText != null) gameTimerText.setCullHint(hint);
+            if (dashCircleBg != null) dashCircleBg.setCullHint(hint);
+            if (dashCircleFill != null) dashCircleFill.setCullHint(hint);
+            if (dashShiftText != null) dashShiftText.setCullHint(hint);
+            if (dashCooldownText != null) dashCooldownText.setCullHint(hint);
+            if (netStatsText != null) netStatsText.setCullHint(hint);
+        }
+
+        public void sendMapEvent(String payload) {
+            if (payload == null || payload.isBlank() || mapDef == null || mapCtx == null) return;
+            try {
+                mapDef.onMapNetMessage(mapCtx, payload);
+            } catch (Exception e) {
+                logSafe("Map.localEvent", e);
+            }
+            if (solo) return;
+            String safePayload = Base64.getUrlEncoder()
+                    .withoutPadding()
+                    .encodeToString(payload.getBytes(StandardCharsets.UTF_8));
+            sendNet("MAP_EVT|" + (loadedMapInfo != null ? loadedMapInfo.id : "unknown") + "|" + safePayload);
+        }
+
+        public void killSnakeFromMap(int index, String reason) {
+            if (index < 0 || index >= snakes.size()) return;
+            killSnake(index, reason == null ? "погиб на карте" : reason);
         }
 
         private void sendNet(String msg) {
@@ -7985,13 +8480,10 @@ public class SnakeApp extends SimpleApplication {
 						}
 
 						if (shadowsEnabled && dynamicLightsEnabled && sunLight != null) {
-								gameShadowRenderer = new DirectionalLightShadowRenderer(assetManager, 2048, 3);
-								gameShadowRenderer.setLight(sunLight);
-								gameShadowRenderer.setShadowIntensity(0.72f);
-								gameShadowRenderer.setEdgeFilteringMode(EdgeFilteringMode.PCFPOISSON);
-								gameShadowRenderer.setShadowZExtend(120f);
-								gameShadowRenderer.setShadowZFadeLength(15f);
-								app.getViewPort().addProcessor(gameShadowRenderer);
+								gameShadowRenderer = SnakeApp.createShadowRendererForCurrentQuality(assetManager, sunLight);
+								if (gameShadowRenderer != null) {
+										app.getViewPort().addProcessor(gameShadowRenderer);
+								}
 						}
 
 						// ── Постобработка: Bloom / Fog / God Rays ──
@@ -8915,6 +9407,8 @@ public class SnakeApp extends SimpleApplication {
             updateFrozenArena(tpf);
 						updateSandstorm(tpf);
 
+            updateExternalMap(tpf);
+
             if (centerMsgTimer>0) {
                 centerMsgTimer -= tpf;
                 if (centerMsgTimer<=0 && centerMsg != null) centerMsg.setColor(new ColorRGBA(1f,1f,0.2f,0f));
@@ -8930,7 +9424,7 @@ public class SnakeApp extends SimpleApplication {
                     for (SnakePlayer s : snapshot(snakes)) if (s != null && !s.isDead()) { winner = s.getName(); break; }
                     showGameoverOverlay(winner);
                 }
-                updateCamera();
+                updateActiveCamera(tpf);
                 updateHUD(); updatePlayerTabText();
                 for (SnakePlayer sp:snakes) sp.updateNameTag(cam);
                 return;
@@ -9012,7 +9506,7 @@ public class SnakeApp extends SimpleApplication {
                 }
             }
 
-            updateCamera(); updateHUD(); updatePlayerTabText();
+            updateActiveCamera(tpf); updateHUD(); updatePlayerTabText();
             for (SnakePlayer sp:snakes) sp.updateNameTag(cam);
 						updateCactusRespawns(tpf);
 						updateClientCactusStickRequests(tpf);
@@ -9681,6 +10175,29 @@ public class SnakeApp extends SimpleApplication {
             }
         }
 
+        private void updateExternalMap(float tpf) {
+            if (mapDef == null || mapCtx == null) return;
+            try { mapDef.update(mapCtx, tpf); }
+            catch (Exception e) { logSafe("Map.update", e); }
+
+            if (solo || isHost) {
+                try { mapDef.hostUpdate(mapCtx, tpf); }
+                catch (Exception e) { logSafe("Map.hostUpdate", e); }
+            } else {
+                try { mapDef.clientUpdate(mapCtx, tpf); }
+                catch (Exception e) { logSafe("Map.clientUpdate", e); }
+            }
+        }
+
+        private void updateActiveCamera(float tpf) {
+            if (mapDef != null && mapCtx != null && mapDef.overridesCamera()) {
+                try { mapDef.updateCamera(mapCtx, tpf); }
+                catch (Exception e) { logSafe("Map.camera", e); updateCamera(); }
+            } else {
+                updateCamera();
+            }
+        }
+
         private void updateCamera() {
             if (freeCameraMode || cam == null || snakes == null || snakes.isEmpty()) return;
             SnakePlayer target;
@@ -9758,13 +10275,10 @@ public class SnakeApp extends SimpleApplication {
 
             // ── 6. Тени (DirectionalLightShadowRenderer) ──
 						if (SnakeApp.shadowsEnabled && SnakeApp.dynamicLightsEnabled) {
-								gameShadowRenderer = new DirectionalLightShadowRenderer(assetManager, 2048, 3);
-								gameShadowRenderer.setLight(sunLight);
-								gameShadowRenderer.setShadowIntensity(0.72f);
-								gameShadowRenderer.setEdgeFilteringMode(EdgeFilteringMode.PCFPOISSON);
-								gameShadowRenderer.setShadowZExtend(120f);
-								gameShadowRenderer.setShadowZFadeLength(15f);
-								app.getViewPort().addProcessor(gameShadowRenderer);
+								gameShadowRenderer = SnakeApp.createShadowRendererForCurrentQuality(assetManager, sunLight);
+								if (gameShadowRenderer != null) {
+										app.getViewPort().addProcessor(gameShadowRenderer);
+								}
 						} else {
 								gameShadowRenderer = null;
 						}
@@ -9837,18 +10351,17 @@ public class SnakeApp extends SimpleApplication {
 				}
 
         /** Обновляет цикл дня/ночи каждый кадр */
-        private void updateDayNightCycle(float tpf) {
-            dayNightTime = (dayNightTime + tpf) % TOTAL_CYCLE;
-            if (dayNightTime < DAY_DURATION) {
-                updateDayPhase(dayNightTime / DAY_DURATION);
-            } else {
-                updateNightPhase((dayNightTime - DAY_DURATION) / NIGHT_DURATION);
-            }
-            // Купол неба следует за камерой
-            if (skyDome != null) skyDome.setLocalTranslation(cam.getLocation());
-
+				private void updateDayNightCycle(float tpf) {
+						if (mapDef != null && mapDef.overridesDayNight()) return;
+						dayNightTime = (dayNightTime + tpf) % TOTAL_CYCLE;
+						if (dayNightTime < DAY_DURATION) {
+								updateDayPhase(dayNightTime / DAY_DURATION);
+						} else {
+								updateNightPhase((dayNightTime - DAY_DURATION) / NIGHT_DURATION);
+						}
+						if (skyDome != null) skyDome.setLocalTranslation(cam.getLocation());
 						updateGridAppearance();
-        }
+				}
 
 				private void updateDayPhase(float t) {
 						// Позиция солнца (без изменений)
@@ -10051,6 +10564,12 @@ public class SnakeApp extends SimpleApplication {
 
         @Override
         public void cleanup() {
+            if (mapDef != null && mapCtx != null) {
+                try { mapDef.cleanup(mapCtx); }
+                catch (Exception e) { logSafe("Map.cleanup", e); }
+                try { mapCtx.cleanupCreatedPhysics(); }
+                catch (Exception e) { logSafe("Map.cleanupPhysics", e); }
+            }
 						cleanupFrozenArena();
             super.cleanup();
             netRunning.set(false);
@@ -10300,6 +10819,13 @@ public class SnakeApp extends SimpleApplication {
 
         public void setMoving(boolean v) { this.movingInput=v; }
         public boolean isMoving() { return movingInput; }
+
+        public void setVisible(boolean visible) {
+            Spatial.CullHint hint = visible ? Spatial.CullHint.Inherit : Spatial.CullHint.Always;
+            for (Geometry g : segments) if (g != null) g.setCullHint(hint);
+            if (nameTag != null) nameTag.setCullHint(hint);
+            if (faceText != null) faceText.setCullHint(hint);
+        }
 
 				public void update(float tpf, float maxSpeed, float turnSpeed, float spacing) {
 						tpf = safeTpf(tpf);
