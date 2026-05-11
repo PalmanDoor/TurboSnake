@@ -1125,6 +1125,10 @@ public class SnakeApp extends SimpleApplication {
             return SnakeApp.litMat(assetManager, color);
         }
 
+				public ColorRGBA getPlayerColor(int index) {
+						return game != null ? game.getPlayerColor(index) : new ColorRGBA(0.15f, 0.9f, 0.3f, 1f);
+				}
+
         public Material unshaded(ColorRGBA color) {
             return SnakeApp.unshaded(assetManager, color);
         }
@@ -5206,6 +5210,17 @@ public class SnakeApp extends SimpleApplication {
             Spatial ss = gameoverNode.getChild("GOScores");
             if (ss instanceof BitmapText) ((BitmapText)ss).setText(sb.toString());
         }
+
+				public ColorRGBA getPlayerColor(int index) {
+						if (index >= 0 && index < allPlayers.size()) {
+								String name = allPlayers.get(index);
+								ColorRGBA c = playerColors.get(name);
+								if (c != null) return c;
+						}
+						// fallback – цвета по умолчанию
+						return index == 0 ? new ColorRGBA(0.15f, 0.9f, 0.3f, 1f)
+															: SNAKE_COLORS[index % SNAKE_COLORS.length].clone();
+				}
 
         private void showGameoverOverlay(String winnerName) {
             gameoverNode.setCullHint(Spatial.CullHint.Inherit);
