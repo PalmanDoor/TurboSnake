@@ -81,6 +81,8 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
     private int arenaSeed = 1;
     private boolean seedReceived = false;
 
+		private int nextPickupId = 1000;
+
     private final List<Wall2D> walls = new ArrayList<>();
     private final List<Geometry> tintGeometries = new ArrayList<>();
     private final List<Tank2D> enemyTanks = new ArrayList<>();
@@ -267,6 +269,13 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
         decorRoot = new Node("TankBattle2DOutsideDecor");
         uiRoot = new Node("TankBattle2DUI");
 
+				if (ctx.solo || ctx.host) {
+						buildArena(ctx, arenaSeed);
+				} else {
+						seedReceived = false;  // ждём сид от хоста
+				}
+				// mode = Mode.GARAGE; остаётся после условия
+
         ctx.rootNode.attachChild(world);
         world.attachChild(arenaRoot);
         world.attachChild(wallRoot);
@@ -396,6 +405,7 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
             ctx.setCoreHudVisible(true);
             restoreCameraState(ctx);
         }
+				
 				ctx.setMusic("Sounds/theme/main1.ogg", 0.5f);
         uninstallInput(ctx);
         removeAllAirplaneLights();
@@ -624,7 +634,7 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
         float spawnZ = ctx.myIndex <= 1 ? 0f : (-18f + (ctx.myIndex % 4) * 12f);
         float heading = spawnX < 0f ? 0f : FastMath.PI;
         Vector3f playerSpawn = safeSpawnPoint(spawnX, spawnZ, TANK_RADIUS + 0.7f);
-        player = createTank(ctx, "PlayerTank", playerSpawn.x, playerSpawn.z, heading, false, selectedTurret, tankColor(selectedTank), selectedTank, ctx.myIndex);
+        player = createTank(ctx, "PlayerTank", playerSpawn.x, playerSpawn.z, heading, false, selectedTurret, tankColor(selectedTank, ctx.getPlayerColor(ctx.myIndex)), selectedTank, ctx.myIndex);
 
         if (botsEnabled) {
             spawnEnemyTank(ctx, 31f, 0f, FastMath.PI, Turret.DEFAULT);
@@ -639,8 +649,12 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
 
         Vector3f pickupA = safeSpawnPoint(-31f, -22f, 2.0f);
         Vector3f pickupB = safeSpawnPoint(31f, 22f, 2.0f);
-        spawnPickup(ctx, PickupKind.SHIELD, pickupA.x, pickupA.z);
-        spawnPickup(ctx, PickupKind.REPAIR, pickupB.x, pickupB.z);
+				Pickup2D p1 = spawnPickup(ctx, PickupKind.SHIELD, pickupA.x, pickupA.z);
+				Pickup2D p2 = spawnPickup(ctx, PickupKind.REPAIR, pickupB.x, pickupB.z);
+				if (!ctx.solo && p1 != null && p2 != null) {
+						broadcast(ctx, "TB2D_PICKUP|" + PickupKind.SHIELD.ordinal() + "|" + p1.x + "|" + p1.z + "|" + p1.id);
+						broadcast(ctx, "TB2D_PICKUP|" + PickupKind.REPAIR.ordinal() + "|" + p2.x + "|" + p2.z + "|" + p2.id);
+				}
         enemySpawnTimer = 10f; wormSpawnTimer = 9999f; pickupSpawnTimer = 14f;
     }
 
@@ -690,7 +704,7 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
 				preview.maxHp = tankHp(selectedTank);
 				preview.hp = preview.maxHp;
 
-				previewTank = buildTankNode(ctx, preview, tankColor(selectedTank));
+				previewTank = buildTankNode(ctx, preview, tankColor(selectedTank, lobbySnakeColor()));
 
 				// 4. На всякий случай принудительно отключить фары (не должны были добавиться)
 				setHeadlightsVisible(preview, false);
@@ -1423,6 +1437,11 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
             if (p.node != null) { p.node.setLocalRotation(new Quaternion().fromAngleAxis(p.spin, Vector3f.UNIT_Y)); p.node.setLocalTranslation(p.x, 0.55f + FastMath.sin(p.spin * 1.4f) * 0.18f, p.z); }
             if (dist2(player.x, player.z, p.x, p.z) < 5.0f) {
                 p.active = false; if (p.node != null) p.node.removeFromParent();
+								
+								if (ctx.solo || ctx.host) {
+										broadcast(ctx, "TB2D_PICKUP_TAKEN|" + p.id);
+								}
+								
                 if (p.kind == PickupKind.SHIELD) { playerShieldTimer = 8f; showCenter("Щит +8 сек.", 1.2f, pickupColor(p.kind)); }
                 else if (p.kind == PickupKind.REPAIR) { player.hp = Math.min(player.maxHp, player.hp + 45); showCenter("Ремонт +45 HP", 1.2f, pickupColor(p.kind)); }
                 else if (p.kind == PickupKind.RAPID) { rapidTimer = 8f; showCenter("Скорострельность +8 сек.", 1.2f, pickupColor(p.kind)); }
@@ -1441,17 +1460,18 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
         if (ctx == null || player == null) return;
         removeTankLights(player);
         if (player.node != null) player.node.removeFromParent();
-        player.node = buildTankNode(ctx, player, player.color == null ? tankColor(player.tankModel) : player.color);
+        player.node = buildTankNode(ctx, player, player.color == null ? tankColor(player.tankModel, ctx.getPlayerColor(ctx.myIndex)) : player.color);
         tankRoot.attachChild(player.node);
         updateTankNode(player);
     }
 
-    private void spawnPickup(SnakeApp.MapContext ctx, PickupKind kind, float x, float z) {
-        if (ctx == null || pickupRoot == null) return;
-        Vector3f safe = safeSpawnPoint(x, z, 1.6f);
-        x = safe.x; z = safe.z;
-        Pickup2D p = new Pickup2D(); p.kind = kind; p.x = x; p.z = z; p.active = true;
-        Node n = new Node("Pickup_" + kind);
+		private Pickup2D spawnPickup(SnakeApp.MapContext ctx, PickupKind kind, float x, float z) {
+				if (ctx == null || pickupRoot == null) return null;
+				Vector3f safe = safeSpawnPoint(x, z, 1.6f);
+				x = safe.x; z = safe.z;
+				Pickup2D p = new Pickup2D(); p.kind = kind; p.x = x; p.z = z; p.active = true;
+				p.id = nextPickupId++;
+				Node n = new Node("Pickup_" + kind);
         if (kind == PickupKind.DUAL_CANNON) {
             addBox(ctx, n, "DualBox", new Vector3f(0f, 0f, 0f), new Vector3f(0.55f, 0.20f, 0.55f), pickupColor(kind));
             addBox(ctx, n, "GunL", new Vector3f(-0.18f, 0.22f, 0.55f), new Vector3f(0.07f, 0.05f, 0.55f), new ColorRGBA(0.08f,0.08f,0.08f,1f));
@@ -1463,9 +1483,10 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
             Geometry g = new Geometry("PickupCore", new Sphere(12, 12, 0.55f));
             g.setMaterial(ctx.unshaded(pickupColor(kind))); n.attachChild(g);
         }
-        n.setLocalTranslation(x, 0.55f, z); pickupRoot.attachChild(n);
-        p.node = n; pickups.add(p);
-    }
+				n.setLocalTranslation(x, 0.55f, z); pickupRoot.attachChild(n);
+				p.node = n; pickups.add(p);
+				return p;   // <-- ВОЗВРАЩАЕМ объект
+		}
 
     private void placeMine(SnakeApp.MapContext ctx, Tank2D owner) {
         if (ctx == null || owner == null || !owner.alive) return;
@@ -1847,12 +1868,7 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
         x = safe.x;
         z = safe.z;
         int model = turret == Turret.STURM ? 4 : turret == Turret.SNIPER ? 3 : turret == Turret.FIRE ? 0 : 1;
-        ColorRGBA c = turret == Turret.STURM ? new ColorRGBA(0.30f, 0.34f, 0.20f, 1f)
-                : turret == Turret.FIRE ? new ColorRGBA(0.85f, 0.25f, 0.08f, 1f)
-                : turret == Turret.FREEZE ? new ColorRGBA(0.15f, 0.55f, 0.95f, 1f)
-                : turret == Turret.SNIPER ? new ColorRGBA(0.75f, 0.75f, 0.18f, 1f)
-                : new ColorRGBA(0.65f, 0.12f, 0.08f, 1f);
-        Tank2D bot = createTank(ctx, "EnemyTank", x, z, heading, true, turret, c, model, -1000 - enemyTanks.size());
+        Tank2D bot = createTank(ctx, "EnemyTank", x, z, heading, true, turret, tankColor(model, new ColorRGBA(0.15f, 0.90f, 0.30f, 1f)), model, -1000 - enemyTanks.size());
         pickNewBotPatrolTarget(bot);
     }
 
@@ -1935,7 +1951,7 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
         float barrelL = tankBarrelHalfLength(model);
         float barrelW = tankBarrelHalfWidth(model);
 
-        ColorRGBA hullColor = t.color != null ? t.color : tankColor(model);
+        ColorRGBA hullColor = t.color != null ? t.color : tankColor(model, new ColorRGBA(0.15f, 0.90f, 0.30f, 1f));
         ColorRGBA trackColor = darken(hullColor, 0.28f);
         ColorRGBA panelColor = darken(hullColor, 0.72f);
         ColorRGBA ember = new ColorRGBA(0.86f, 0.24f, 0.06f, 1f);
@@ -2327,17 +2343,39 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
                 readyPlayers.put(idx, true); readyTankModels.put(idx, model); readyTurrets.put(idx, turret);
                 showCenter("Игрок " + (idx + 1) + " выбрал танк", 2f, new ColorRGBA(0.25f, 0.85f, 1f, 1f));
                 if (localReady && allPlayersReady(ctx) && mode == Mode.GARAGE) startBattle(ctx);
-            } else if ("TB2D_JOIN".equals(p[0]) && p.length >= 4) {
-                int idx = parseInt(p[1], -1); if (idx >= 0 && idx != ctx.myIndex) getOrCreateRemoteTank(ctx, idx, parseInt(p[2], 1), turretByOrdinal(parseInt(p[3], 0)));
+						} else if ("TB2D_PICKUP".equals(p[0]) && p.length >= 4) {
+								PickupKind kind = pickupByOrdinal(parseInt(p[1], 0));
+								float px = parseFloat(p[2], 0f);
+								float pz = parseFloat(p[3], 0f);
+								Pickup2D pu = spawnPickup(ctx, kind, px, pz);
+								if (pu != null && p.length >= 5) {
+										pu.id = parseInt(p[4], pu.id);
+								}
+						} else if ("TB2D_PICKUP_TAKEN".equals(p[0]) && p.length >= 2) {
+								int id = parseInt(p[1], -1);
+								for (Pickup2D pu : pickups) {
+										if (pu.id == id && pu.active) {
+												pu.active = false;
+												if (pu.node != null) pu.node.removeFromParent();
+												break;
+										}
+								}
+						} else if ("TB2D_JOIN".equals(p[0]) && p.length >= 4) {
+                int idx = parseInt(p[1], -1); if (idx >= 0 && idx != ctx.myIndex) {
+                    int model = parseInt(p[2], 1);
+                    Turret turret = turretByOrdinal(parseInt(p[3], 0));
+                    getOrCreateRemoteTank(ctx, idx, model, turret, ctx.getPlayerColor(idx));
+                }
             } else if ("TB2D_STATE".equals(p[0]) && p.length >= 10) {
                 int idx = parseInt(p[1], -1); if (idx < 0 || idx == ctx.myIndex) return;
-                Tank2D rt = getOrCreateRemoteTank(ctx, idx, parseInt(p[6], 1), turretByOrdinal(parseInt(p[7], 0)));
+                int model = parseInt(p[6], 1);
+                Tank2D rt = getOrCreateRemoteTank(ctx, idx, model, turretByOrdinal(parseInt(p[7], 0)), ctx.getPlayerColor(idx));
                 rt.x = parseFloat(p[2], rt.x); rt.z = parseFloat(p[3], rt.z); rt.heading = parseFloat(p[4], rt.heading); rt.hp = parseInt(p[5], rt.hp); rt.turret = turretByOrdinal(parseInt(p[7], rt.turret.ordinal())); rt.alive = parseInt(p[8], 1) == 1; rt.dualVisual = parseInt(p[9], 0) == 1;
                 updateTankNode(rt);
             } else if ("TB2D_SHOT".equals(p[0]) && p.length >= 7) {
                 int idx = parseInt(p[1], -1); if (idx == ctx.myIndex) return;
                 Turret turret = turretByOrdinal(parseInt(p[6], 0));
-                Tank2D owner = getOrCreateRemoteTank(ctx, idx, 1, turret);
+                Tank2D owner = getOrCreateRemoteTank(ctx, idx, 1, turret, ctx.getPlayerColor(idx));
                 Bullet2D b = new Bullet2D(); b.x = parseFloat(p[2], owner.x); b.z = parseFloat(p[3], owner.z); b.vx = parseFloat(p[4], 0f); b.vz = parseFloat(p[5], 0f); b.turret = turret; b.owner = owner; b.ownerIndex = idx; b.damage = turretDamage(turret); b.life = turret == Turret.STURM ? 2.0f : 2.2f; b.maxBounces = turret == Turret.STURM ? 0 : 2;
                 Geometry g = new Geometry("RemoteBullet", new Sphere(10, 10, turret == Turret.STURM ? 0.72f : 0.34f)); g.setMaterial(ctx.unshaded(turretColor(turret))); g.setLocalTranslation(b.x, 0.52f, b.z); bulletRoot.attachChild(g); b.geo = g; bullets.add(b);
             } else if ("TB2D_BEAM".equals(p[0]) && p.length >= 6) {
@@ -2360,19 +2398,38 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
         } catch (Exception ignored) {}
     }
 
-    private Tank2D getOrCreateRemoteTank(SnakeApp.MapContext ctx, int idx, int model, Turret turret) {
+    private Tank2D getOrCreateRemoteTank(SnakeApp.MapContext ctx, int idx, int model, Turret turret, ColorRGBA color) {
+        ColorRGBA baseColor = color != null ? color : (ctx != null ? ctx.getPlayerColor(idx) : null);
+        if (baseColor == null) baseColor = new ColorRGBA(0.15f, 0.90f, 0.30f, 1f);
+        ColorRGBA finalColor = tankColor(model, baseColor);
         Tank2D t = remoteTanks.get(idx);
-        if (t != null) return t;
+        if (t != null) {
+            boolean rebuildVisual = t.tankModel != model || t.turret != turret;
+            t.tankModel = model;
+            t.turret = turret;
+            t.color = finalColor;
+            if (rebuildVisual && ctx != null && tankRoot != null) {
+                removeTankLights(t);
+                if (t.node != null) t.node.removeFromParent();
+                t.node = buildTankNode(ctx, t, t.color);
+                tankRoot.attachChild(t.node);
+                updateTankNode(t);
+            }
+            return t;
+        }
         float spawnX = (idx % 2 == 0) ? -31f : 31f;
         float spawnZ = idx <= 1 ? 0f : (-18f + (idx % 4) * 12f);
-        t = createTank(ctx, "RemoteTank" + idx, spawnX, spawnZ, spawnX < 0f ? 0f : FastMath.PI, false, turret, tankColor(model), model, idx);
+        t = createTank(ctx, "RemoteTank" + idx, spawnX, spawnZ, spawnX < 0f ? 0f : FastMath.PI, false, turret, finalColor, model, idx);
         remoteTanks.put(idx, t);
         return t;
     }
 
     private void createRemotePlaceholders(SnakeApp.MapContext ctx) {
         if (ctx == null || ctx.players == null) return;
-        for (int i = 0; i < ctx.players.size(); i++) if (i != ctx.myIndex) getOrCreateRemoteTank(ctx, i, readyTankModels.getOrDefault(i, 1), readyTurrets.getOrDefault(i, Turret.DEFAULT));
+        for (int i = 0; i < ctx.players.size(); i++) if (i != ctx.myIndex) {
+            int model = readyTankModels.getOrDefault(i, 1);
+            getOrCreateRemoteTank(ctx, i, model, readyTurrets.getOrDefault(i, Turret.DEFAULT), ctx.getPlayerColor(i));
+        }
     }
 
     private void spawnNetworkBeam(SnakeApp.MapContext ctx, int ownerIndex, float startX, float startZ, float heading, float length) {
@@ -2504,15 +2561,14 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
     private float tankSpeed(int model) { return TANK_SPEED[wrap(model, TANK_SPEED.length)]; }
     private float tankTurn(int model) { return TANK_TURN[wrap(model, TANK_TURN.length)]; }
     private Turret defaultTurretForTank(int model) { if (model == 0) return Turret.FIRE; if (model == 3) return Turret.SNIPER; if (model == 4) return Turret.STURM; return Turret.DEFAULT; }
-    private ColorRGBA tankColor(int model) {
-        model = wrap(model, TANK_NAMES.length);
-        ColorRGBA base = lobbySnakeColor();
-        if (model == 0) return brighten(base, 1.22f);
-        if (model == 2) return darken(base, 0.66f);
-        if (model == 3) return mixColor(brighten(base, 1.08f), new ColorRGBA(1f, 0.92f, 0.20f, 1f), 0.18f);
-        if (model == 4) return mixColor(darken(base, 0.58f), new ColorRGBA(0.30f, 0.34f, 0.20f, 1f), 0.24f);
-        return base;
-    }
+		private ColorRGBA tankColor(int model, ColorRGBA base) {
+				model = wrap(model, TANK_NAMES.length);
+				if (model == 0) return brighten(base, 1.22f);
+				if (model == 2) return darken(base, 0.66f);
+				if (model == 3) return mixColor(brighten(base, 1.08f), new ColorRGBA(1f, 0.92f, 0.20f, 1f), 0.18f);
+				if (model == 4) return mixColor(darken(base, 0.58f), new ColorRGBA(0.30f, 0.34f, 0.20f, 1f), 0.24f);
+				return base;
+		}
 
     private ColorRGBA lobbySnakeColor() {
         String[] fieldNames = new String[] { "selectedSnakeColor", "snakeColor", "currentSnakeColor" };
@@ -2591,7 +2647,7 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
     private static class WormSeg { Geometry geo; float x, z; }
     private static class Particle2D { Geometry geo; float x, z, vx, vz, life, maxLife; }
     private static class Beam2D { Geometry beam, glow; float life; }
-    private static class Pickup2D { Node node; PickupKind kind; float x, z, spin; boolean active = true; }
+    private static class Pickup2D { Node node; PickupKind kind; float x, z, spin; boolean active = true; int id; }
     private static class Mine2D { Node node; float x, z, armTimer; int ownerIndex; boolean active; }
     private static class AirRoute2D { float startX, startZ, endX, endZ, dropX, dropZ; }
     private static class Airplane2D { Node node; Geometry lightLampL, lightLampR, lightBeamL, lightBeamR; SpotLight headSpotL, headSpotR; PickupKind kind; float x, z, vx, vz, heading, speed, travel, totalDist, dropDistance, dropX, dropZ; boolean dropped, lightsAttached; }
