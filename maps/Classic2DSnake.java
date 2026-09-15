@@ -19,6 +19,7 @@ public class Classic2DSnake implements SnakeApp.ExternalMapDef {
         s.turnSpeed = 4.0f;
         s.maxFood = 10;
         s.allowGrowth = true;
+        s.enableCombat = true;
         s.enableRegularFood = true;
         s.enableBadFood = false;
         s.enableBallRain = false;
@@ -42,7 +43,7 @@ public class Classic2DSnake implements SnakeApp.ExternalMapDef {
         ctx.rootNode.attachChild(world);
 
         float h = ctx.mapHalf();
-        ctx.addStaticBox(world, "2DFloor", new Vector3f(0f, -0.4f, 0f), new Vector3f(h, 0.15f, h), new ColorRGBA(0.04f, 0.12f, 0.06f, 1f));
+        ctx.addStaticBox(world, "2DFloor", new Vector3f(0f, -0.4f, 0f), new Vector3f(h, 0.2f, h), new ColorRGBA(0.04f, 0.12f, 0.06f, 1f));
         ctx.addStaticBox(world, "TopWall", new Vector3f(0f, 0.5f, h), new Vector3f(h, 0.7f, 0.35f), new ColorRGBA(0.15f, 0.65f, 0.22f, 1f));
         ctx.addStaticBox(world, "BottomWall", new Vector3f(0f, 0.5f, -h), new Vector3f(h, 0.7f, 0.35f), new ColorRGBA(0.15f, 0.65f, 0.22f, 1f));
         ctx.addStaticBox(world, "LeftWall", new Vector3f(-h, 0.5f, 0f), new Vector3f(0.35f, 0.7f, h), new ColorRGBA(0.15f, 0.65f, 0.22f, 1f));
@@ -50,15 +51,17 @@ public class Classic2DSnake implements SnakeApp.ExternalMapDef {
 
         // Сетка поля без физики.
         for (int i = -32; i <= 32; i += 4) {
-            ctx.addVisualBox(world, "GridX" + i, new Vector3f(i, -0.18f, 0f), new Vector3f(0.035f, 0.02f, h), new ColorRGBA(0.08f, 0.22f, 0.10f, 1f));
-            ctx.addVisualBox(world, "GridZ" + i, new Vector3f(0f, -0.17f, i), new Vector3f(h, 0.02f, 0.035f), new ColorRGBA(0.08f, 0.22f, 0.10f, 1f));
+            ctx.addVisualBox(world, "GridX" + i, new Vector3f(i, -0.14f, 0f), new Vector3f(0.035f, 0.02f, h), new ColorRGBA(0.08f, 0.22f, 0.10f, 1f));
+            ctx.addVisualBox(world, "GridZ" + i, new Vector3f(0f, -0.13f, i), new Vector3f(h, 0.02f, 0.035f), new ColorRGBA(0.08f, 0.22f, 0.10f, 1f));
         }
     }
 
     @Override
     public void updateCamera(SnakeApp.MapContext ctx, float tpf) {
         Vector3f head = ctx.getMySnakeHead();
-        ctx.camera.setLocation(new Vector3f(head.x, 70f, head.z + 0.01f));
+        float aspect=(float)ctx.camera.getWidth()/Math.max(1,ctx.camera.getHeight());
+        float height=aspect<1.4f?52f:43f;
+        ctx.camera.setLocation(new Vector3f(head.x,height,head.z + 0.01f));
         ctx.camera.lookAt(new Vector3f(head.x, 0f, head.z), Vector3f.UNIT_Z);
     }
 

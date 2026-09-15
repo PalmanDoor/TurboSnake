@@ -66,6 +66,8 @@ public class SnakeApp extends SimpleApplication {
 
     public static final int BROADCAST_PORT = 45678;
     public static final int GAME_PORT      = 45679;
+    static String matchSession = "solo";
+    static String matchStartPacket = null;
 
     // =========================================================================
     // NULL-SAFE / FAIL-SAFE УТИЛИТЫ
@@ -107,7 +109,7 @@ public class SnakeApp extends SimpleApplication {
 
     static float parseFloatOrDefault(String value, float fallback, String area) {
         try {
-            return value == null ? fallback : Float.parseFloat(value);
+            return value == null ? fallback : ArenaRules.finite(Float.parseFloat(value), fallback);
         } catch (Exception e) {
             logSafe(area, "bad float '" + value + "', fallback=" + fallback);
             return fallback;
@@ -1071,6 +1073,7 @@ public class SnakeApp extends SimpleApplication {
         default void onMapNetMessage(MapContext ctx, String payload) {}
 
         // Очистка узлов/эффектов карты при выходе из матча.
+        default void onGameOver(MapContext ctx) {}
         default void cleanup(MapContext ctx) {}
     }
 
@@ -1090,6 +1093,8 @@ public class SnakeApp extends SimpleApplication {
         public final int myIndex;
         public final List<String> players;
         private final List<RigidBodyControl> createdRigidBodies = new CopyOnWriteArrayList<>();
+        public boolean particlesEnabled(){return SnakeApp.particlesEnabled;}
+        public void setLocalScore(int score){SnakePlayer s=game.combatSnake(myIndex);if(s!=null)s.score=Math.max(0,score);}
 
         public MapContext(GameState game,
                           SimpleApplication app,
@@ -1243,6 +1248,7 @@ public class SnakeApp extends SimpleApplication {
         public float turnSpeed = 2.8f;
         public int maxFood = 18;
         public boolean allowGrowth = true;
+        public boolean enableCombat = true;
         public boolean enableRegularFood = true;
         public boolean enableBadFood = true;
         public boolean enableBallRain = true;
@@ -1264,6 +1270,7 @@ public class SnakeApp extends SimpleApplication {
             m.turnSpeed = turnSpeed;
             m.maxFood = maxFood;
             m.allowGrowth = allowGrowth;
+            m.enableCombat = enableCombat;
             m.enableRegularFood = enableRegularFood;
             m.enableBadFood = enableBadFood;
             m.enableBallRain = enableBallRain;
@@ -1385,13 +1392,14 @@ public class SnakeApp extends SimpleApplication {
             }
             String cp = System.getProperty("java.class.path") + java.io.File.pathSeparator + ".";
             List<String> args = new ArrayList<>();
+            args.add("-encoding"); args.add("UTF-8");
             args.add("-cp"); args.add(cp);
             args.add("-d");  args.add(dir.getPath());
             for (java.io.File src : sources) {
                 java.io.File cls = new java.io.File(dir, src.getName().replace(".java", ".class"));
                 if (!cls.exists() || cls.lastModified() < src.lastModified()) args.add(src.getPath());
             }
-            if (args.size() <= 4) return;
+            if (args.size() <= 6) return;
             int code = compiler.run(null, null, null, args.toArray(new String[0]));
             if (code != 0) System.out.println("[Maps] javac maps/*.java вернул код " + code);
         }
@@ -2322,6 +2330,7 @@ public class SnakeApp extends SimpleApplication {
                         if (creditsBtn != null) creditsBtn.nudgeText(8f, 0f);
                         if (patreonBtn != null) patreonBtn.nudgeText(8f, 0f);
                         if (discordBtn != null) discordBtn.nudgeText(8f, 0f);
+                        buildCombatMenuPanel(font,W,H,S);
                         buildCreditsPanel();
 
 						// =========================================================
@@ -2329,6 +2338,23 @@ public class SnakeApp extends SimpleApplication {
 						// =========================================================
 						buildSettingsPanel();
 				}
+
+        private void buildCombatMenuPanel(BitmapFont font,float w,float h,float s) {
+            float x=w*.57f,width=Math.min(500*s,w-x-24*s);
+            if(width<210*s)return;
+            Node panel=new Node("SurvivalMenu");guiNode.attachChild(panel);
+            Geometry background=new Geometry("Card",new com.jme3.scene.shape.Quad(width,300*s));
+            Material m=unshaded(assetManager,new ColorRGBA(.025f,.055f,.095f,.94f));
+            m.getAdditionalRenderState().setBlendMode(RenderState.BlendMode.Alpha);
+            background.setMaterial(m);background.setLocalTranslation(x,h*.5f-135*s,0);panel.attachChild(background);
+            BitmapText title=new BitmapText(font);title.setSize(27*s);title.setColor(ACCENT);title.setText("АРЕНА ВЫЖИВАНИЯ");
+            title.setLocalTranslation(x+20*s,h*.5f+138*s,1);panel.attachChild(title);
+            BitmapText info=new BitmapText(font);info.setSize(17*s);info.setColor(TEXT);
+            info.setText("Волны врагов и 3 босса\nБроня, комбо и выбор улучшений\nСовместные забеги до 4 игроков\n\nSPACE — стрельба   E — импульс\nSHIFT — рывок   1 / 2 / 3 — улучшить\n\nРекорд: волна "+RunProgress.best("GreenArena","wave")+"  /  "+RunProgress.best("GreenArena","score")+" очков");
+            info.setLocalTranslation(x+20*s,h*.5f+90*s,1);panel.attachChild(info);
+            if(info.getLineWidth()>width-40*s)info.setSize(info.getSize()*(width-40*s)/info.getLineWidth());
+            if(title.getLineWidth()>width-40*s)title.setSize(title.getSize()*(width-40*s)/title.getLineWidth());
+        }
 
         private void buildCreditsPanel() {
             float W = cam.getWidth(), H = cam.getHeight();
@@ -4180,9 +4206,11 @@ public class SnakeApp extends SimpleApplication {
             String[] p = msg.split("\\|", -1);
             switch (p[0]) {
 								case "JOIN":
-										if (players.size() < 4 && !gameStarted.get()) {
+                                        if(p.length<4 || !String.valueOf(MatchProtocol.VERSION).equals(p[3])){sendToClient("REJECT|Нужна версия TurboSnake 2",from);break;}
+										if ((players.size() < 4 || clientNames.containsKey(from)) && !gameStarted.get()) {
 
-												String requestedNick = p.length > 1 ? p[1] : "Player";
+												String requestedNick = p.length > 1 ? p[1].replaceAll("[\\p{Cntrl}|]","").trim() : "Player";
+                                                    if(requestedNick.length()>24)requestedNick=requestedNick.substring(0,24);
                                                     String nick = clientNames.get(from);
                                                     if (nick == null) {
                                                         nick = makeUniqueNick(requestedNick);
@@ -4222,7 +4250,8 @@ public class SnakeApp extends SimpleApplication {
 								case "COLOR_REQ":
 										if (p.length > 2) {
 
-												String nick = p[1];
+												String nick = clientNames.get(from);
+                                                if(nick==null)break;
 												ColorRGBA color = decodeColor(p[2]);
 
 												lobbyColors.put(nick, color);
@@ -4241,6 +4270,7 @@ public class SnakeApp extends SimpleApplication {
 										}
 										break;
                 case "MAP_REQ":
+                    if(!clientNames.containsKey(from))break;
                     if (p.length > 1) {
                         try { selectedMap = clampMapIndex(Integer.parseInt(p[1])); } catch (Exception ignore) {}
                         broadcastToAll("MAP|" + selectedMap);
@@ -4249,10 +4279,12 @@ public class SnakeApp extends SimpleApplication {
                     break;
                 case "CHAT":
                     if (p.length >= 3) {
-                        String nick = decChat(p[1]);
+                        String nick = clientNames.get(from);if(nick==null)break;
                         String text = decChat(p[2]);
+                        if(text.length()>300)text=text.substring(0,300);
+                        final String chatText=text;
                         String packet = "CHAT|" + encChat(nick) + "|" + encChat(text);
-                        app.enqueue(() -> addChatLine(nick, text));
+                        app.enqueue(() -> addChatLine(nick, chatText));
                         broadcastToAll(packet);
                     }
                     break;
@@ -4288,12 +4320,13 @@ public class SnakeApp extends SimpleApplication {
             while (!gameStarted.get() && searching.get()) {
                 retryTimer -= 0.05f;
                 if (!joinAcknowledged && retryTimer <= 0f) {
-                    sendToHost("JOIN|" + myNick + "|" + encodeColor(selectedSnakeColor));
+                    sendToHost("JOIN|" + myNick + "|" + encodeColor(selectedSnakeColor)+"|"+MatchProtocol.VERSION);
                     retryTimer = retryInterval;
                 }
                 try {
                     DatagramPacket pkt = new DatagramPacket(buf, buf.length);
                     socket.receive(pkt);
+                    if(pkt.getPort()!=hostPort || !pkt.getAddress().equals(InetAddress.getByName(hostAddress)))continue;
                     String msg = new String(pkt.getData(), 0, pkt.getLength(), StandardCharsets.UTF_8);
                     app.enqueue(() -> handleClientMessage(msg));
                 } catch (SocketTimeoutException ignore) {}
@@ -4312,6 +4345,9 @@ public class SnakeApp extends SimpleApplication {
             if (msg == null || msg.isBlank()) return;
             String[] p = msg.split("\\|", -1);
             switch (p[0]) {
+                    case "REJECT":
+                        showNotification(p.length>1?p[1]:"Подключение отклонено");
+                        searching.set(false);break;
                     case "NICK":
                         if (p.length > 1 && !p[1].isBlank()) {
                             String oldNick = myNick;
@@ -4336,6 +4372,17 @@ public class SnakeApp extends SimpleApplication {
                     if (p.length>1) { try { selectedMap = clampMapIndex(Integer.parseInt(p[1])); refreshUI(); refreshMapSelection(); } catch (Exception ignore) {} }
                     break;
 								case "START":
+                                        if(gameStarted.get())break;
+                                        if(p.length<8 || !String.valueOf(MatchProtocol.VERSION).equals(p[4])){showNotification("Нужна одинаковая версия TurboSnake 2 на всех компьютерах");break;}
+                                        int compatibleMap=-1;
+                                        for(int k=0;k<getLoadedMapCount();k++)if(getMapInfo(k).id.equals(p[6]))compatibleMap=k;
+                                        if(compatibleMap<0){showNotification("Нет карты "+p[6]);break;}
+                                        p[1]=String.valueOf(compatibleMap);
+                                        if(!p[5].matches("[a-zA-Z0-9-]{1,64}"))break;
+                                        matchSession=p[5];
+                                        players.clear();
+                                        players.addAll(Arrays.asList(new String(Base64.getUrlDecoder().decode(p[7]),StandardCharsets.UTF_8).split("\\n")));
+                                        if(players.size()>4 || !players.contains(myNick)){showNotification("Некорректный состав игроков");break;}
 										if (p.length > 1) {
 												try {
 														selectedMap = clampMapIndex(Integer.parseInt(p[1]));
@@ -4389,14 +4436,19 @@ public class SnakeApp extends SimpleApplication {
         }
 
         private void startGame() {
+            matchSession=java.util.UUID.randomUUID().toString();
+            matchStartPacket="START|"+selectedMap+"|"+(cubesEnabled?1:0)+"|"+encodeAllColors()+"|"+MatchProtocol.VERSION+"|"+matchSession+"|"+getMapInfo(selectedMap).id+"|"+Base64.getUrlEncoder().withoutPadding().encodeToString(String.join("\n",players).getBytes(StandardCharsets.UTF_8));
             gameStarted.set(true);
 						broadcastAllColors();
-						broadcastToAll("START|" + selectedMap + "|" + (cubesEnabled ? 1 : 0) + "|" + encodeAllColors());
+						broadcastToAll(matchStartPacket);
             launchGame();
         }
 
 				private void launchGame() {
-						searching.set(false);
+                        searching.set(false);
+                        if(netThread!=null && netThread!=Thread.currentThread()){
+                            try{netThread.join(450);}catch(InterruptedException e){Thread.currentThread().interrupt();}
+                        }
 
 						List<String> playerList = new ArrayList<>(players);
 						int myIdx = playerList.indexOf(myNick);
@@ -4531,6 +4583,10 @@ public class SnakeApp extends SimpleApplication {
     // =========================================================================
     static class GameState extends AbstractAppState {
 
+        private final List<com.jme3.input.RawInputListener> trackedRaw=new ArrayList<>();
+        private final List<InputListener> trackedActions=new ArrayList<>();
+        private void addGameRawListener(com.jme3.input.RawInputListener l){trackedRaw.add(l);inputManager.addRawInputListener(l);}
+        private void addGameListener(InputListener l,String... mappings){trackedActions.add(l);inputManager.addListener(l,mappings);}
         private SimpleApplication app;
         private Node rootNode, guiNode;
         private AssetManager assetManager;
@@ -4571,8 +4627,8 @@ public class SnakeApp extends SimpleApplication {
         // Рывок  (увеличена длительность с 0.18 до 0.55 — рывок теперь ощутимый)
         private float dashCooldown = 0f;
         private static final float DASH_COOLDOWN_MAX = 4f;
-        private static final float DASH_SPEED_MULT   = 5.0f;   // немного увеличен множитель
-        private static final float DASH_DURATION     = 0.55f;  // было 0.18f
+        private static final float DASH_SPEED_MULT   = 3.1f;   // немного увеличен множитель
+        private static final float DASH_DURATION     = 0.42f;  // было 0.18f
         private float dashTimer = 0f;
         private BitmapText dashCooldownText;
         private Geometry dashCircleBg, dashCircleFill;
@@ -4608,6 +4664,56 @@ public class SnakeApp extends SimpleApplication {
 				private int lastH = -1;
 
         private final List<SnakePlayer> snakes = new ArrayList<>();
+        private ArenaCombat combat;
+        private float fixedAccumulator, cameraDt=1f/60f, startRepeatTimer, startRepeatAge, foodSyncTimer;
+        private boolean cameraReady;
+        private final Map<InetSocketAddress, MatchProtocol> links=new HashMap<>();
+        private final ArrayBlockingQueue<InboundPacket> inbound=new ArrayBlockingQueue<>(512);
+        private final Map<Integer,Long> commandSeq=new HashMap<>(), stateSeq=new HashMap<>();
+        private final Map<Integer,Float> commandAge=new HashMap<>();
+        private long inputSequence, stateSequence;
+        private float environmentSyncTimer, puddleSpawnTimer;
+        private long iceSnapshot=-1, ballSnapshot=-1;
+        private int nextIceId=1;
+        private boolean[] remoteFire;
+        private final Set<Integer> deadCubeIds=new HashSet<>();
+        private final Map<Integer,Long> foodVersions=new HashMap<>();
+        private long foodManifestTick=-1;
+        private final Set<Integer> foodManifest=new HashSet<>();
+        private com.jme3.input.RawInputListener gameRawInput;
+        private static final class InboundPacket {
+            final InetSocketAddress sender; final String data;
+            InboundPacket(InetSocketAddress sender,String data){this.sender=sender;this.data=data;}
+        }
+        boolean acceptsGameplayInput(){return !pauseActive && !gameOver && !freeCameraMode && myIndex<snakes.size() && !snakes.get(myIndex).isDead();}
+        boolean isMenuOverlayVisible(){return pauseActive || gameOver;}
+        SnakePlayer combatSnake(int i){return i>=0 && i<snakes.size()?snakes.get(i):null;}
+        void combatNotice(String text,ColorRGBA color){showCenter(text,color);}
+        void combatSend(String text){sendNet(text);}
+        void combatKill(int i,String reason){killSnake(i,reason);}
+        boolean combatSafePosition(float x,float z,float clearance){
+            if(mapIndex==2) for(float[] p:PIT_POSITIONS) if(ArenaRules.segmentDistanceSquared(x,z,p[0],p[1],p[0],p[1])<(PIT_RADIUS+clearance)*(PIT_RADIUS+clearance))return false;
+            if(mapIndex==1)for(CactusData c:cacti)if(!c.hit && new Vector3f(x,0,z).distanceSquared(new Vector3f(c.origX,0,c.origZ))<(clearance+1)*(clearance+1))return false;
+            return Math.abs(x)<mapHalf-2 && Math.abs(z)<mapHalf-2;
+        }
+        boolean combatHitCube(float ax,float az,float bx,float bz,int damage,int owner){
+            for(BlackCube c:new ArrayList<>(blackCubes))if(c.active){
+                Vector3f p=c.geo.getWorldTranslation();float r=1f+c.biteCount*.12f;
+                if(ArenaRules.segmentDistanceSquared(p.x,p.z,ax,az,bx,bz)<r*r){damageCube(c,damage,owner);return true;}
+            }return false;
+        }
+        void combatPulseCubes(Vector3f at,float radius,int damage,int owner){
+            for(BlackCube c:new ArrayList<>(blackCubes))if(c.active && c.geo.getWorldTranslation().distance(at)<radius)damageCube(c,damage,owner);
+        }
+        private void damageCube(BlackCube c,int damage,int owner){
+            if(!solo && !isHost)return;
+            c.hp-=damage;if(c.hp<=0){destroyCube(c.id);sendNet("CUBE_DEAD|"+c.id);if(combat!=null)combat.cubeReward(owner);}
+        }
+        private void destroyCube(int id){
+            deadCubeIds.add(id);BlackCube c=findBlackCube(id);if(c==null)return;
+            c.active=false;if(c.phy!=null){c.phy.setEnabled(false);bulletAppState.getPhysicsSpace().remove(c.phy);}
+            c.geo.removeFromParent();blackCubes.remove(c);
+        }
         private Node foodNode, wallNode, cloudNode, worldNode, cubeNode;
         private Material cloudMaterial;
 				private Node gridNode;
@@ -4817,6 +4923,7 @@ public class SnakeApp extends SimpleApplication {
 				private enum IceSpikePhase { TELEGRAPHING, RISING, EXTENDED, RETRACTING }
 
 				private static final class IceSpike {
+                        int id;
 						float x, z, floorY;
 						IceSpikePhase phase = IceSpikePhase.TELEGRAPHING;
 						float phaseTimer, warnDuration;
@@ -5084,6 +5191,7 @@ public class SnakeApp extends SimpleApplication {
 								buildTerrainGrid();
 						}
             createSnakes();
+            remoteFire=new boolean[snakes.size()];
 						
 						if (!solo && isHost) {
 								clientIndexMap.clear();
@@ -5105,6 +5213,7 @@ public class SnakeApp extends SimpleApplication {
             spawnFood(effectiveMaxFood);
             if (cubesEnabled) spawnInitialCubes();
             buildHUD();
+            if(mapSettings.enableCombat) combat=new ArenaCombat(mapCtx);
             createGameoverUI();
             setupControls();
             loadSounds();
@@ -5199,7 +5308,7 @@ public class SnakeApp extends SimpleApplication {
             if (gameoverNode == null) return;
             if (!solo && goPlayAgainBtn != null) goPlayAgainBtn.setText("В МЕНЮ");
             Spatial ws = gameoverNode.getChild("GOWinner");
-            if (ws instanceof BitmapText) ((BitmapText)ws).setText("Победитель: " + winnerName);
+            if (ws instanceof BitmapText) ((BitmapText)ws).setText(mapSettings.enableCombat || solo ? "Забег завершён" : "Победитель: " + winnerName);
 
             StringBuilder sb = new StringBuilder();
             for (int i=0; i<snakes.size(); i++) {
@@ -5225,6 +5334,7 @@ public class SnakeApp extends SimpleApplication {
         private void showGameoverOverlay(String winnerName) {
             gameoverNode.setCullHint(Spatial.CullHint.Inherit);
             gameoverUIActive = true;
+            if(mapDef!=null)mapDef.onGameOver(mapCtx);
             if (inputManager != null) inputManager.setCursorVisible(true);
             populateGameoverContent(winnerName);
 
@@ -5239,7 +5349,7 @@ public class SnakeApp extends SimpleApplication {
                             new MouseAxisTrigger(MouseInput.AXIS_X, false), new MouseAxisTrigger(MouseInput.AXIS_X, true),
                             new MouseAxisTrigger(MouseInput.AXIS_Y, false), new MouseAxisTrigger(MouseInput.AXIS_Y, true));
                 }
-                inputManager.addListener((AnalogListener)(n,v,t) -> {
+                addGameListener((AnalogListener)(n,v,t) -> {
                     if (!gameoverUIActive) return;
                     com.jme3.math.Vector2f mp = inputManager != null ? inputManager.getCursorPosition() : null;
                 if (mp == null) return;
@@ -5247,7 +5357,7 @@ public class SnakeApp extends SimpleApplication {
                     if (goPlayAgainBtn != null) goPlayAgainBtn.updateHover(mx, my);
                     if (goMenuBtn != null) goMenuBtn.updateHover(mx, my);
                 }, "GO_MouseMove");
-                inputManager.addListener((ActionListener)(n,p,t) -> {
+                addGameListener((ActionListener)(n,p,t) -> {
                     if (!gameoverUIActive) return;
                     com.jme3.math.Vector2f mp = inputManager != null ? inputManager.getCursorPosition() : null;
                 if (mp == null) return;
@@ -5277,7 +5387,7 @@ public class SnakeApp extends SimpleApplication {
             closeQuietly(socket);
             if (rainSound != null) { rainSound.stop(); detachQuietly(rootNode, rainSound); rainSound = null; }
             for (SnakePlayer sp : snakes) sp.cleanup(guiNode);
-            for (BlackCube bc : blackCubes) {
+            for (BlackCube bc : snapshot(blackCubes)) {
                 if (bc.phy != null) { bc.phy.setEnabled(false); bulletAppState.getPhysicsSpace().remove(bc.phy); }
             }
             blackCubes.clear();
@@ -5295,7 +5405,7 @@ public class SnakeApp extends SimpleApplication {
 										hostAddress,
 										hostPort,
 										clients,
-										selectedMap,
+										mapIndex,
 										cubesEnabled,
 										new HashMap<>(),
 										this.clientNames
@@ -5307,6 +5417,7 @@ public class SnakeApp extends SimpleApplication {
             bulletAppState = new BulletAppState();
             stateManager.attach(bulletAppState);
             bulletAppState.getPhysicsSpace().setGravity(new Vector3f(0,-9.81f,0));
+            bulletAppState.getPhysicsSpace().setAccuracy(1f/120f);
         }
 
         // ── Внешний мир ───────────────────────────────────────────────────
@@ -6076,8 +6187,10 @@ public class SnakeApp extends SimpleApplication {
         // ── Облака ────────────────────────────────────────────────────────
 				private void buildClouds() {
 						cloudNode = new Node("Clouds");
+                        cloudNode.setQueueBucket(RenderQueue.Bucket.Transparent);
+                        cloudNode.setShadowMode(RenderQueue.ShadowMode.Off);
 						rootNode.attachChild(cloudNode);
-						if (mapIndex == 2) return;
+						if (mapIndex == 2 || (mapDef!=null && mapDef.overridesCamera())) return;
 
 						cloudMaterial = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
 						cloudMaterial.setColor("Color", new ColorRGBA(0.90f, 0.92f, 0.96f, 0.42f));
@@ -6105,7 +6218,7 @@ public class SnakeApp extends SimpleApplication {
 
 								cloud.setLocalTranslation(
 										(rng.nextFloat() - 0.5f) * mapHalf * 3f,
-										14f + rng.nextFloat() * 10f,
+										42f + rng.nextFloat() * 14f,
 										(rng.nextFloat() - 0.5f) * mapHalf * 3f
 								);
 								cloudNode.attachChild(cloud);
@@ -6172,7 +6285,7 @@ public class SnakeApp extends SimpleApplication {
         // ── Еда ───────────────────────────────────────────────────────────
         private void spawnFood(int count) {
             foodNode = new Node("Food"); rootNode.attachChild(foodNode);
-            if (solo) { for (int i=0;i<count;i++) addOneFood(); }
+            if (mapSettings.enableRegularFood && (solo || isHost)) { for (int i=0;i<count;i++) addOneFood(); }
         }
 
         private void addOneFood() {
@@ -6184,6 +6297,9 @@ public class SnakeApp extends SimpleApplication {
         }
 
         private void addFoodWithData(int id, float x, float z, boolean bad, boolean isDebris) {
+            if(!Float.isFinite(x) || !Float.isFinite(z) || eatenFoodIds.contains(id))return;
+            for(FoodItem existing:foodItems)if(existing.id==id)return;
+            if(foodItems.size()>=512)return;
             x = FastMath.clamp(x, -mapHalf+1.5f, mapHalf-1.5f);
             z = FastMath.clamp(z, -mapHalf+1.5f, mapHalf-1.5f);
             Material mat;
@@ -6198,17 +6314,13 @@ public class SnakeApp extends SimpleApplication {
                         litMat(assetManager, new ColorRGBA(0.8f,0.2f,0.9f,1f)),
                         litMat(assetManager, new ColorRGBA(0.1f,0.9f,0.7f,1f))
                 };
-                mat = goodMats[FastMath.nextRandomInt(0, goodMats.length-1)]; radius = 0.38f;
+                mat = goodMats[Math.floorMod(id,goodMats.length)]; radius = 0.38f;
             }
             Geometry geo = new Geometry("Food"+(isDebris?"D":""), new Sphere(12,12,radius));
             geo.setMaterial(mat);
             geo.setShadowMode(RenderQueue.ShadowMode.Cast);
-            geo.setLocalTranslation(x, isDebris?0.4f:1.8f, z);
-            RigidBodyControl phy = new RigidBodyControl(new SphereCollisionShape(radius), 1f);
-            geo.addControl(phy); bulletAppState.getPhysicsSpace().add(phy);
-            if (isDebris) {
-                phy.setLinearVelocity(new Vector3f((FastMath.nextRandomFloat()-0.5f)*4f, 1.5f, (FastMath.nextRandomFloat()-0.5f)*4f));
-            }
+            geo.setLocalTranslation(x,getSurfaceHeight(x,z)+radius+.08f,z);
+            // Pickups are anchored to the terrain on every peer.
             foodNode.attachChild(geo);
             foodItems.add(new FoodItem(geo, bad, id, isDebris));
         }
@@ -6365,13 +6477,13 @@ public class SnakeApp extends SimpleApplication {
             m.setColor("Color", new ColorRGBA(0f,0f,0f,0.58f));
             m.getAdditionalRenderState().setBlendMode(RenderState.BlendMode.Alpha);
             netStatsBg.setMaterial(m);
-            netStatsBg.setLocalTranslation(206f * S, H - 28f * S, 2f);
+            netStatsBg.setLocalTranslation(W-206f * S, H - 28f * S, 2f);
             guiNode.attachChild(netStatsBg);
 
             netStatsText = new BitmapText(font);
             netStatsText.setSize(13f * S);
             netStatsText.setColor(TEXT);
-            netStatsText.setLocalTranslation(22f * S, H - 23f * S, 3f);
+            netStatsText.setLocalTranslation(W-390f * S, H - 23f * S, 3f);
             guiNode.attachChild(netStatsText);
         }
 
@@ -6448,9 +6560,12 @@ public class SnakeApp extends SimpleApplication {
         }
 
         private void showCenter(String msg, ColorRGBA c) {
+            if(centerMsg==null)return;
+            centerMsg.setSize(28f*Math.max(.9f,uiScale(cam)));
             centerMsg.setText(msg); centerMsg.setColor(c);
             float W=cam.getWidth(), H=cam.getHeight();
-            centerMsg.setLocalTranslation(W/2-centerMsg.getLineWidth()/2, H/2, 0);
+            if(centerMsg.getLineWidth()>W*.90f)centerMsg.setSize(centerMsg.getSize()*W*.90f/centerMsg.getLineWidth());
+            centerMsg.setLocalTranslation(W/2-centerMsg.getLineWidth()/2, H*.72f, 4);
             centerMsgTimer = 4f;
         }
 
@@ -6458,23 +6573,28 @@ public class SnakeApp extends SimpleApplication {
         private void setupControls() {
             inputManager.addMapping("Left",  new KeyTrigger(KeyInput.KEY_A), new KeyTrigger(KeyInput.KEY_LEFT));
             inputManager.addMapping("Right", new KeyTrigger(KeyInput.KEY_D), new KeyTrigger(KeyInput.KEY_RIGHT));
-            inputManager.addListener((ActionListener)(n,p,t) -> {
-                if (freeCameraMode || gameOver || myIndex>=snakes.size()) return;
+            addGameListener((ActionListener)(n,p,t) -> {
+                if ((pauseActive && p) || freeCameraMode || gameOver || myIndex>=snakes.size()) return;
                 SnakePlayer me = snakes.get(myIndex);
                 if ("Left".equals(n))  me.setTurnLeft(p);
                 if ("Right".equals(n)) me.setTurnRight(p);
             }, "Left", "Right");
 
-            inputManager.addMapping("Forward", new KeyTrigger(KeyInput.KEY_W));
-            inputManager.addListener((ActionListener)(n,p,t) -> {
-                if (freeCameraMode || gameOver || myIndex>=snakes.size()) return;
+            inputManager.addMapping("Forward", new KeyTrigger(KeyInput.KEY_W), new KeyTrigger(KeyInput.KEY_UP));
+            inputManager.addMapping("Brake", new KeyTrigger(KeyInput.KEY_S), new KeyTrigger(KeyInput.KEY_DOWN));
+            addGameListener((ActionListener)(n,p,t)->{
+                if(myIndex<snakes.size() && (!p || acceptsGameplayInput()))snakes.get(myIndex).setBraking(p);
+            },"Brake");
+            addGameListener((ActionListener)(n,p,t) -> {
+                if ((pauseActive && p) || freeCameraMode || gameOver || myIndex>=snakes.size()) return;
                 snakes.get(myIndex).setMoving(p);
             }, "Forward");
 
             // Рывок
             inputManager.addMapping("Dash", new KeyTrigger(KeyInput.KEY_LSHIFT), new KeyTrigger(KeyInput.KEY_RSHIFT));
-            inputManager.addListener((ActionListener)(n,p,t) -> {
-                if (freeCameraMode || !p || gameOver || myIndex>=snakes.size()) return;
+            addGameListener((ActionListener)(n,p,t) -> {
+                if (!p || !acceptsGameplayInput()) return;
+                if(combat!=null){combat.dash();return;}
                 if (dashCooldown <= 0f) {
                     dashTimer = DASH_DURATION;
                     dashCooldown = DASH_COOLDOWN_MAX;
@@ -6483,7 +6603,7 @@ public class SnakeApp extends SimpleApplication {
 
             inputManager.addMapping("SpecPrev", new MouseButtonTrigger(MouseInput.BUTTON_LEFT));
             inputManager.addMapping("SpecNext", new MouseButtonTrigger(MouseInput.BUTTON_RIGHT));
-            inputManager.addListener((ActionListener)(n,p,t) -> {
+            addGameListener((ActionListener)(n,p,t) -> {
                 if (!p || !spectating || gameoverUIActive) return;
                 if ("SpecPrev".equals(n)) spectateTarget=(spectateTarget-1+snakes.size())%snakes.size();
                 if ("SpecNext".equals(n)) spectateTarget=(spectateTarget+1)%snakes.size();
@@ -6492,7 +6612,7 @@ public class SnakeApp extends SimpleApplication {
             }, "SpecPrev", "SpecNext");
 
             // Пауза и чит-код через RawInputListener
-            inputManager.addRawInputListener(new com.jme3.input.RawInputListener() {
+            addGameRawListener(new com.jme3.input.RawInputListener() {
                 @Override public void onKeyEvent(com.jme3.input.event.KeyInputEvent evt) {
                     int code = evt.getKeyCode();
                     if (code == KeyInput.KEY_TAB) {
@@ -6542,8 +6662,11 @@ public class SnakeApp extends SimpleApplication {
 
 				private void togglePause() {
 						if (gameOver || gameoverUIActive) return;
+                        if(myIndex<snakes.size()){SnakePlayer s=snakes.get(myIndex);s.setMoving(false);s.setBraking(false);s.setTurnLeft(false);s.setTurnRight(false);}
+                        if(combat!=null)combat.clearInput();
+                        if(solo && bulletAppState!=null)bulletAppState.setEnabled(pauseActive);
 
-						// В мультиплеере меню ESC не стопорит мир, но pauseActive нужен мышиным кнопкам.
+                        // В мультиплеере меню ESC не стопорит мир, но pauseActive нужен мышиным кнопкам.
 							if (!solo) {
 									pauseActive = !pauseActive;
 									if (pauseActive) {
@@ -6701,7 +6824,7 @@ public class SnakeApp extends SimpleApplication {
                             new MouseAxisTrigger(MouseInput.AXIS_X, false), new MouseAxisTrigger(MouseInput.AXIS_X, true),
                             new MouseAxisTrigger(MouseInput.AXIS_Y, false), new MouseAxisTrigger(MouseInput.AXIS_Y, true));
                 }
-								inputManager.addListener((AnalogListener)(n,v,t) -> {
+								addGameListener((AnalogListener)(n,v,t) -> {
 										if (!pauseActive) return;
 
 										com.jme3.math.Vector2f mp = inputManager != null ? inputManager.getCursorPosition() : null;
@@ -6720,7 +6843,7 @@ public class SnakeApp extends SimpleApplication {
 										if (pauseMenuBtn != null) pauseMenuBtn.updateHover(mx, my);
 										if (pauseLobbyBtn != null) pauseLobbyBtn.updateHover(mx, my);
 								}, "Pause_MouseMove");
-								inputManager.addListener((ActionListener)(n2,p2,t2) -> {
+								addGameListener((ActionListener)(n2,p2,t2) -> {
 										if (!pauseActive) return;
 
 										com.jme3.math.Vector2f mp = inputManager != null ? inputManager.getCursorPosition() : null;
@@ -7529,6 +7652,7 @@ public class SnakeApp extends SimpleApplication {
 
         // ── Звуки ─────────────────────────────────────────────────────────
         private void loadSounds() {
+            if(app==null || app.getAudioRenderer()==null)return;
             eatSounds[0] = tryAudio("Sounds/Eat1.ogg");
             eatSounds[1] = tryAudio("Sounds/Eat2.ogg");
             eatSounds[2] = tryAudio("Sounds/Eat3.ogg");
@@ -7561,6 +7685,8 @@ public class SnakeApp extends SimpleApplication {
 
         // ── Сеть ──────────────────────────────────────────────────────────
         private void initNetwork() {
+            if(!isHost)expectedHost=new InetSocketAddress(hostAddress,hostPort);
+            lastNetPacketMs=System.currentTimeMillis();
             if (socket==null) {
                 try { socket=new DatagramSocket(); socket.setSoTimeout(50); }
                 catch (Exception e) { System.out.println("[GAME NET] socket err: "+e.getMessage()); return; }
@@ -7570,27 +7696,15 @@ public class SnakeApp extends SimpleApplication {
         }
 
         private void netRecvLoop() {
-            byte[] buf = new byte[8192];
-            while (netRunning.get()) {
-                try {
-                    DatagramPacket pkt = new DatagramPacket(buf, buf.length);
-                    socket.receive(pkt);
-                    String msg = new String(pkt.getData(), 0, pkt.getLength(), StandardCharsets.UTF_8);
-                    lastNetPacketMs = System.currentTimeMillis();
-                    if (isHost) {
-                        InetSocketAddress sender = new InetSocketAddress(pkt.getAddress(), pkt.getPort());
-												clientLastSeen.put(sender, System.currentTimeMillis());
-                        byte[] rebroadcastBuf = Arrays.copyOf(pkt.getData(), pkt.getLength());
-                        for (InetSocketAddress c : clients) {
-                            if (!c.equals(sender)) {
-                                try { socket.send(new DatagramPacket(rebroadcastBuf, rebroadcastBuf.length, c)); }
-                                catch (Exception ignore) {}
-                            }
-                        }
-                    }
-                    app.enqueue(() -> handleNetMsg(msg));
-                } catch (SocketTimeoutException ignore) {}
-                catch (Exception e) {}
+            byte[] buf=new byte[MatchProtocol.MAX_PACKET];
+            while(netRunning.get()){
+                try{
+                    DatagramPacket pkt=new DatagramPacket(buf,buf.length);socket.receive(pkt);
+                    InetSocketAddress sender=new InetSocketAddress(pkt.getAddress(),pkt.getPort());
+                    if(isHost?!clientIndexMap.containsKey(sender):!sender.equals(expectedHost))continue;
+                    inbound.offer(new InboundPacket(sender,new String(pkt.getData(),0,pkt.getLength(),StandardCharsets.UTF_8)));
+                }catch(SocketTimeoutException ignored){}
+                catch(IOException e){if(netRunning.get() && socket!=null && !socket.isClosed())logSafe("Game.receive",e);}
             }
         }
 
@@ -7984,6 +8098,7 @@ public class SnakeApp extends SimpleApplication {
             if (dashShiftText != null) dashShiftText.setCullHint(hint);
             if (dashCooldownText != null) dashCooldownText.setCullHint(hint);
             if (netStatsText != null) netStatsText.setCullHint(hint);
+            if (netStatsBg != null) netStatsBg.setCullHint(hint);
         }
 
         public void sendMapEvent(String payload) {
@@ -8006,18 +8121,202 @@ public class SnakeApp extends SimpleApplication {
         }
 
         private void sendNet(String msg) {
-            if (socket == null || msg == null) return;
-            byte[] b = msg.getBytes(StandardCharsets.UTF_8);
-            if (isHost) {
-                for (InetSocketAddress c : snapshot(clients)) {
-                    if (c == null) continue;
-                    try { socket.send(new DatagramPacket(b,b.length,c)); }
-                    catch (Exception e) { logSafe("Game.sendNet.host", e); }
-                }
-            } else if (hostAddress != null) {
-                try { socket.send(new DatagramPacket(b,b.length,new InetSocketAddress(hostAddress,hostPort))); }
-                catch (Exception e) { logSafe("Game.sendNet.client", e); }
+            if(solo || socket==null || msg==null)return;
+            if(isHost){for(InetSocketAddress c:clients)sendToPeer(c,msg);}
+            else sendToPeer(expectedHost!=null?expectedHost:new InetSocketAddress(hostAddress,hostPort),msg);
+        }
+        private void rawSend(InetSocketAddress address,String data) {
+            if(socket==null || socket.isClosed())return;
+            try {byte[] bytes=data.getBytes(StandardCharsets.UTF_8);if(bytes.length<=MatchProtocol.MAX_PACKET)socket.send(new DatagramPacket(bytes,bytes.length,address));}
+            catch(IOException e){logSafe("Game.transport",e);}
+        }
+        private boolean reliableMessage(String text) {
+            if(text.startsWith("SYNC2|") || text.startsWith("CMD2|") || text.startsWith("CB2|") || text.startsWith("ICE2|") || text.startsWith("BALLS2|")
+                || text.startsWith("FOODPOS2|") || text.startsWith("FOODMAN2|")
+                || text.startsWith("CUBE_STATE|") || text.startsWith("DAYTIME|")
+                || text.startsWith("PING|") || text.startsWith("PONG|"))return false;
+            if(text.startsWith("MAP_EVT|")){
+                try{return !new String(Base64.getUrlDecoder().decode(text.split("\\|",-1)[2]),StandardCharsets.UTF_8).startsWith("TB2D_STATE|");}
+                catch(RuntimeException e){return false;}
             }
+            return true;
+        }
+        private void sendToPeer(InetSocketAddress address,String text) {
+            if(address==null)return;
+            try {
+                MatchProtocol link=links.computeIfAbsent(address,a->new MatchProtocol(matchSession));
+                rawSend(address,link.send(text,reliableMessage(text),System.nanoTime()*1e-9));
+            }catch(RuntimeException e){logSafe("Game.send",e);}
+        }
+        private InetSocketAddress expectedHost;
+        private void pumpNetwork(float dt) {
+            double now=System.nanoTime()*1e-9;
+            for(Map.Entry<InetSocketAddress,MatchProtocol> e:new ArrayList<>(links.entrySet()))e.getValue().retry(now,data->rawSend(e.getKey(),data));
+            for(int n=0;n<256;n++){
+                InboundPacket packet=inbound.poll();if(packet==null)break;
+                Integer owner=isHost?clientIndexMap.get(packet.sender):null;
+                if(isHost && owner==null)continue;
+                if(!isHost && !packet.sender.equals(expectedHost))continue;
+                MatchProtocol link=links.computeIfAbsent(packet.sender,a->new MatchProtocol(matchSession));
+                if(!link.accepts(packet.data))continue;
+                String msg;
+                try{msg=link.receive(packet.data,data->rawSend(packet.sender,data));}
+                catch(RuntimeException e){continue;}
+                lastNetPacketMs=System.currentTimeMillis();
+                if(isHost)clientLastSeen.put(packet.sender,lastNetPacketMs);
+                if(msg==null)continue;
+                try{
+                    if(isHost) handleClientCommand(msg,owner,packet.sender);
+                    else if(!handleSnapshot(msg)) handleNetMsg(msg);
+                }catch(RuntimeException e){logSafe("Game.invalidPacket",e);}
+            }
+            if(isHost && matchStartPacket!=null && startRepeatAge<8f) {
+                startRepeatAge+=dt;startRepeatTimer-=dt;
+                if(startRepeatTimer<=0){startRepeatTimer=.25f;for(InetSocketAddress c:clients)rawSend(c,matchStartPacket);}
+            }
+        }
+        private void handleClientCommand(String msg,int owner,InetSocketAddress from) {
+            String[] p=msg.split("\\|",-1);
+            if("CMD2".equals(p[0]) && p.length==8 && Integer.parseInt(p[1])==owner) {
+                long seq=Long.parseLong(p[2]);if(seq<=commandSeq.getOrDefault(owner,-1L))return;
+                commandSeq.put(owner,seq);commandAge.put(owner,0f);
+                SnakePlayer s=combatSnake(owner);if(s==null || s.isDead())return;
+                s.setTurnLeft("1".equals(p[3]));s.setTurnRight("1".equals(p[4]));s.setMoving("1".equals(p[5]));remoteFire[owner]="1".equals(p[6]);
+                s.setBraking("1".equals(p[7]));
+            }else if("ACT2".equals(p[0]) && p.length==4 && Integer.parseInt(p[1])==owner && combat!=null) {
+                combat.action(owner,Integer.parseInt(p[2]),Long.parseLong(p[3]));
+            }else if("PING".equals(p[0]) && p.length==3)sendToPeer(from,"PONG|"+p[1]+"|"+p[2]);
+            else if("LEAVE".equals(p[0]) && p.length==2 && Integer.parseInt(p[1])==owner)handleNetMsg(msg);
+            else if("DEAD".equals(p[0]) && "tank-battle-2d".equals(mapSettings.mode) && p.length==2 && Integer.parseInt(p[1])==owner)killSnake(owner,"танк уничтожен");
+            else if("MAP_EVT".equals(p[0]) && validClientMapEvent(p,owner)){
+                handleNetMsg(msg);
+                for(InetSocketAddress c:clients)if(!c.equals(from))sendToPeer(c,msg);
+            }
+        }
+        private boolean validClientMapEvent(String[] p,int owner) {
+            if(p.length!=3 || !loadedMapInfo.id.equals(p[1]) || !"tank-battle-2d".equals(mapSettings.mode))return false;
+            String[] e=new String(Base64.getUrlDecoder().decode(p[2]),StandardCharsets.UTF_8).split("\\|",-1);
+            if(e.length<2)return false;
+
+            Set<String> owned=Set.of("TB2D_READY","TB2D_JOIN","TB2D_STATE","TB2D_SHOT","TB2D_BEAM","TB2D_MINE","TB2D_DEAD","TB2D_TAKE");
+            return owned.contains(e[0]) && Integer.parseInt(e[1])==owner;
+        }
+        private boolean handleSnapshot(String msg) {
+            String[] p=msg.split("\\|",-1);
+            if("ICE2".equals(p[0])){receiveIceSnapshot(p);return true;}
+            if("BALLS2".equals(p[0])){receiveBallSnapshot(p);return true;}
+            if("SYNC2".equals(p[0]) && p.length==15) {
+                int idx=Integer.parseInt(p[2]);long seq=Long.parseLong(p[1]);
+                if(idx<0 || idx>=snakes.size() || seq<=stateSeq.getOrDefault(idx,-1L))return true;
+                float x=Float.parseFloat(p[3]),y=Float.parseFloat(p[4]),z=Float.parseFloat(p[5]),a=Float.parseFloat(p[6]),speed=Float.parseFloat(p[7]);
+                if(!Float.isFinite(x)||!Float.isFinite(y)||!Float.isFinite(z)||!Float.isFinite(a)||!Float.isFinite(speed))return true;
+                stateSeq.put(idx,seq);SnakePlayer s=snakes.get(idx);
+                s.applyNetState(x,y,z,a,Integer.parseInt(p[8]),Integer.parseInt(p[9]),"1".equals(p[10]));
+                s.currentSpeed=ArenaRules.clamp(speed,0,80f);
+                if(idx!=myIndex){s.setTurnLeft("1".equals(p[11]));s.setTurnRight("1".equals(p[12]));s.setMoving("1".equals(p[13]));}
+                if(idx==myIndex && s.isDead())spectating=true;
+                gameOver="1".equals(p[14]);return true;
+            }
+            if("CB2".equals(p[0])){if(combat!=null)combat.receive(msg);return true;}
+            if("CUBE_DEAD".equals(p[0])){destroyCube(Integer.parseInt(p[1]));return true;}
+            if("FOODPOS2".equals(p[0]) && p.length==8) {
+                long seq=Long.parseLong(p[1]);int id=Integer.parseInt(p[2]);
+                if(seq<=foodVersions.getOrDefault(id,-1L) || (seq<=foodManifestTick&&!foodManifest.contains(id)))return true;
+                foodVersions.put(id,seq);
+                addFoodWithData(id,Float.parseFloat(p[3]),Float.parseFloat(p[4]),"1".equals(p[5]),"1".equals(p[6]));
+                return true;
+            }
+            if("FOODMAN2".equals(p[0]) && p.length==3) {
+                long seq=Long.parseLong(p[1]);if(seq<=foodManifestTick)return true;
+                foodManifestTick=seq;foodManifest.clear();if(!p[2].isEmpty())for(String id:p[2].split(","))foodManifest.add(Integer.parseInt(id));
+                for(FoodItem f:new ArrayList<>(foodItems))if(foodVersions.getOrDefault(f.id,-1L)<=seq&&!foodManifest.contains(f.id))removeFood(f);
+                return true;
+            }
+            return false;
+        }
+        private void syncPlayers(float dt) {
+            if(solo)return;
+            netSendTimer+=dt;
+            if(netSendTimer<NET_SEND_INTERVAL)return;
+            netSendTimer%=NET_SEND_INTERVAL;
+            if(!isHost) {
+                SnakePlayer s=snakes.get(myIndex);boolean active=acceptsGameplayInput();
+                sendNet("CMD2|"+myIndex+"|"+(++inputSequence)+"|"+(active&&s.isTurnLeft()?1:0)+"|"+(active&&s.isTurnRight()?1:0)+"|"+(active&&s.isMoving()?1:0)+"|"+(active&&combat!=null&&combat.firing()?1:0)+"|"+(active&&s.braking?1:0));
+                pingTimer-=NET_SEND_INTERVAL;
+                if(pingTimer<=0){pingTimer=1;long seq=++pingSeq;pendingPings.clear();pendingPings.put(seq,System.currentTimeMillis());sendNet("PING|"+seq+"|"+System.currentTimeMillis());}
+            } else {
+                stateSequence++;
+                environmentSyncTimer+=NET_SEND_INTERVAL;
+                if(environmentSyncTimer>=.1f){environmentSyncTimer=0;syncEnvironment();}
+                for(int i=0;i<snakes.size();i++){
+                    SnakePlayer s=snakes.get(i);Vector3f h=s.getHeadPos();
+                    sendNet("SYNC2|"+stateSequence+"|"+i+"|"+h.x+"|"+h.y+"|"+h.z+"|"+s.getHeadingAngle()+"|"+s.currentSpeed+"|"+s.getScore()+"|"+s.getLength()+"|"+(s.isDead()?1:0)+"|"+(s.isTurnLeft()?1:0)+"|"+(s.isTurnRight()?1:0)+"|"+(s.isMoving()?1:0)+"|"+(gameOver?1:0));
+                }
+                for(BlackCube c:new ArrayList<>(blackCubes))if(c.active&&c.phy!=null){
+                    Vector3f h=c.phy.getPhysicsLocation(null);Quaternion q=c.phy.getPhysicsRotation(null);
+                    sendNet("CUBE_STATE|"+c.id+"|"+h.x+"|"+h.y+"|"+h.z+"|"+q.getX()+"|"+q.getY()+"|"+q.getZ()+"|"+q.getW());
+                }
+                foodSyncTimer+=NET_SEND_INTERVAL;
+                if(foodSyncTimer>=1){
+                    foodSyncTimer=0;StringJoiner ids=new StringJoiner(",");
+                    for(FoodItem f:foodItems){Vector3f a=f.geo.getWorldTranslation();ids.add(""+f.id);sendNet("FOODPOS2|"+stateSequence+"|"+f.id+"|"+a.x+"|"+a.z+"|"+(f.bad?1:0)+"|"+(f.isDebris?1:0)+"|0");}
+                    sendNet("FOODMAN2|"+stateSequence+"|"+ids);
+                }
+            }
+        }
+
+
+        private float waterMultiplierFor(SnakePlayer snake) {
+            Vector3f h=snake.getHeadPos();
+            for(WaterPuddle p:waterPuddles)if(ArenaRules.segmentDistanceSquared(h.x,h.z,p.x,p.z,p.x,p.z)<p.size*p.size)return .55f;
+            return 1f;
+        }
+
+        private void syncEnvironment() {
+            StringBuilder ice=new StringBuilder("ICE2|").append(stateSequence).append('|').append(frozenArenaActive?1:0).append('|').append(frozenArenaTimer);
+            for(IceSpike s:iceSpikes)ice.append('|').append(s.id).append(',').append(s.x).append(',').append(s.z).append(',').append(s.phase.ordinal()).append(',').append(s.phaseTimer).append(',').append(s.warnDuration);
+            sendNet(ice.toString());
+            StringBuilder balls=new StringBuilder("BALLS2|").append(stateSequence);
+            for(RainBall b:rainBalls){Vector3f p=b.geo.getLocalTranslation();balls.append('|').append(b.id).append(',').append(p.x).append(',').append(p.y).append(',').append(p.z).append(',').append(b.radius).append(',').append(b.landed?1:0);}
+            sendNet(balls.toString());
+        }
+        private static float networkFloat(String s){float v=Float.parseFloat(s);if(!Float.isFinite(v))throw new IllegalArgumentException("Non-finite environment state");return v;}
+        private void receiveIceSnapshot(String[] p) {
+            if(p.length<4 || p.length>4+ICE_MAX_END)return;
+            long seq=Long.parseLong(p[1]);if(seq<=iceSnapshot)return;iceSnapshot=seq;
+            boolean active="1".equals(p[2]);
+            if(!active){if(frozenArenaActive)stopFrozenArenaEvent();return;}
+            if(!frozenArenaActive)startFrozenArenaEvent();
+            frozenArenaTimer=networkFloat(p[3]);Set<Integer> present=new HashSet<>();
+            for(int n=4;n<p.length;n++){
+                String[] a=p[n].split(",");if(a.length!=6)continue;
+                int id=Integer.parseInt(a[0]),phase=Integer.parseInt(a[3]);
+                if(phase<0 || phase>=IceSpikePhase.values().length)continue;
+                float x=networkFloat(a[1]),z=networkFloat(a[2]),wait=networkFloat(a[4]),warning=networkFloat(a[5]);
+                IceSpike spike=null;for(IceSpike old:iceSpikes)if(old.id==id){spike=old;break;}
+                if(spike==null){spike=buildIceSpike(x,z,getSurfaceHeight(x,z),warning);spike.id=id;iceSpikes.add(spike);}
+                spike.phase=IceSpikePhase.values()[phase];spike.phaseTimer=wait;spike.done=false;present.add(id);
+                if(spike.phase==IceSpikePhase.EXTENDED){
+                    spike.body.setLocalTranslation(0,ICE_BODY_EXTENDED,0);spike.glow.setLocalTranslation(0,ICE_BODY_EXTENDED,0);
+                    spike.tip.setLocalTranslation(0,ICE_BODY_EXTENDED+ICE_SPIKE_H*.5f,0);
+                }
+                updateIceSpikeVisual(spike,0);
+            }
+            for(Iterator<IceSpike> it=iceSpikes.iterator();it.hasNext();){IceSpike s=it.next();if(!present.contains(s.id)){s.root.removeFromParent();it.remove();}}
+        }
+        private void receiveBallSnapshot(String[] p) {
+            if(p.length<2 || p.length>82)return;
+            long seq=Long.parseLong(p[1]);if(seq<=ballSnapshot)return;ballSnapshot=seq;
+            Set<Integer> present=new HashSet<>();
+            ColorRGBA[] colors={new ColorRGBA(1f,.2f,.8f,1),new ColorRGBA(.2f,.8f,1,1),new ColorRGBA(1,.9f,.1f,1),new ColorRGBA(.4f,1,.3f,1)};
+            for(int n=2;n<p.length;n++){
+                String[] a=p[n].split(",");if(a.length!=6)continue;
+                int id=Integer.parseInt(a[0]);float x=networkFloat(a[1]),y=networkFloat(a[2]),z=networkFloat(a[3]),r=ArenaRules.clamp(networkFloat(a[4]),.1f,1f);
+                RainBall ball=null;for(RainBall old:rainBalls)if(old.id==id){ball=old;break;}
+                if(ball==null){Geometry g=new Geometry("RainBall",new Sphere(8,8,r));g.setMaterial(unshaded(assetManager,colors[Math.floorMod(id,colors.length)]));rainBallNode.attachChild(g);ball=new RainBall(g,id,10f,r);rainBalls.add(ball);}
+                ball.geo.setLocalTranslation(x,y,z);ball.landed="1".equals(a[5]);ball.landedTimer=10f;ball.lifeTimer=10f;present.add(id);
+            }
+            for(Iterator<RainBall> it=rainBalls.iterator();it.hasNext();){RainBall b=it.next();if(!present.contains(b.id)){b.geo.removeFromParent();it.remove();}}
         }
 
         // ── Ивент 1: Шариковый дождь ──────────────────────────────────────
@@ -8129,11 +8428,12 @@ public class SnakeApp extends SimpleApplication {
         }
 
 				private void spawnRainBall(float x, float z) {
+                        if(rainBalls.size()>=80)return;
 						ColorRGBA[] cols = {
 								new ColorRGBA(1f,0.2f,0.8f,1f), new ColorRGBA(0.2f,0.8f,1f,1f),
 								new ColorRGBA(1f,0.9f,0.1f,1f), new ColorRGBA(0.4f,1f,0.3f,1f)
 						};
-						ColorRGBA col = cols[FastMath.nextRandomInt(0, cols.length - 1)];
+						ColorRGBA col = cols[Math.floorMod(ballIdCounter,cols.length)];
 						float r = 0.3f + FastMath.nextRandomFloat() * 0.3f;
 						Geometry geo = new Geometry("RainBall", new Sphere(8, 8, r));
 						geo.setMaterial(unshaded(assetManager, col));
@@ -8141,7 +8441,7 @@ public class SnakeApp extends SimpleApplication {
 						rainBallNode.attachChild(geo);
 						int id = ballIdCounter++;
 						rainBalls.add(new RainBall(geo, id, 4f + FastMath.nextRandomFloat() * 3f, r));
-						if (!solo) sendNet("BALL_SPAWN|" + id + "|" + x + "|" + z);
+						// Positions and membership are sent in BALLS2 snapshots.
 				}
 
         // ── Ивент 2: Дождь ────────────────────────────────────────────────
@@ -8178,7 +8478,9 @@ public class SnakeApp extends SimpleApplication {
 												}
 										}
                     if (solo || isHost) {
-                        if ((int)(weatherRainTimer*10) % 30 == 0) {
+                        puddleSpawnTimer-=tpf;
+                        if (puddleSpawnTimer<=0) {
+                            puddleSpawnTimer=3f;
                             for (int attempt = 0; attempt < 10; attempt++) {
                                 float px = FastMath.clamp((FastMath.nextRandomFloat()-0.5f)*mapHalf*1.8f,-mapHalf+3f,mapHalf-3f);
                                 float pz = FastMath.clamp((FastMath.nextRandomFloat()-0.5f)*mapHalf*1.8f,-mapHalf+3f,mapHalf-3f);
@@ -8329,7 +8631,6 @@ public class SnakeApp extends SimpleApplication {
 										iceSpikes.remove(i);
 								}
 						}
-						if (solo || isHost) checkIceSpikeCollisions();
 						emitIceParticlesFromActiveSpikes(tpf);
 						updateIceParticles(tpf);
 				}
@@ -8898,7 +9199,8 @@ public class SnakeApp extends SimpleApplication {
 
 								float floorY = getSurfaceHeight(x, z);
 								IceSpike spike = buildIceSpike(x, z, floorY, iceWarnDuration);
-								iceSpikes.add(spike);
+								spike.id=nextIceId++;
+                                iceSpikes.add(spike);
 								return;
 						}
 						// Если не нашли свободное место — не спавним (без штрафа, попробуем в след. кадре)
@@ -9060,14 +9362,15 @@ public class SnakeApp extends SimpleApplication {
 				}
 
 				private BlackCube findBlackCube(int id) {
-						for (BlackCube bc : blackCubes) {
+						for (BlackCube bc : snapshot(blackCubes)) {
 								if (bc.id == id) return bc;
 						}
 						return null;
 				}
 
 				private BlackCube spawnBlackCube(int id, float x, float z) {
-						BlackCube existing = findBlackCube(id);
+						if(deadCubeIds.contains(id)) return null;
+                        BlackCube existing = findBlackCube(id);
 						if (existing != null) return existing;
 
 						if (cubeNode == null) {
@@ -9116,7 +9419,7 @@ public class SnakeApp extends SimpleApplication {
 						// В сетевой игре кубы считает только хост.
 						// Клиенты только получают CUBE_STATE и двигают визуал.
 						if (!solo && !isHost) return;
-            for (BlackCube bc : blackCubes) {
+            for (BlackCube bc : snapshot(blackCubes)) {
                 if (!bc.active) continue;
                 bc.glitchTimer       -= tpf;
                 bc.impulseTimer      -= tpf;
@@ -9214,7 +9517,7 @@ public class SnakeApp extends SimpleApplication {
 
 				private void interpolateClientCubes(float tpf) {
 						if (solo || isHost) return; // хост управляет физикой напрямую
-						for (BlackCube bc : blackCubes) {
+						for (BlackCube bc : snapshot(blackCubes)) {
 								if (!bc.active) continue;
 								bc.interpolateTransform(tpf);
 						}
@@ -9243,6 +9546,8 @@ public class SnakeApp extends SimpleApplication {
                 }
 
                 if (closestSeg!=null && minDist<hitThreshold) {
+                    if(combat!=null && combat.dashTime(si)>0){damageCube(bc,5,si);return;}
+                    if(combat!=null){combat.hurt(si,1);bc.hitCooldowns.put(si,1.5f);return;}
                     bc.hitCooldowns.put(si, 2.5f);
                     Vector3f fromHit = cubePos.subtract(closestSeg).setY(0);
                     if (fromHit.lengthSquared()<0.001f)
@@ -9275,7 +9580,7 @@ public class SnakeApp extends SimpleApplication {
             }
             // Куб растёт только если действительно откусил массу
             if (shrinkAmt <= 0) { if (snakeIdx == myIndex) playSound(chitSound); return; }
-            for (BlackCube bc : blackCubes) {
+            for (BlackCube bc : snapshot(blackCubes)) {
                 if (bc.id == cubeId) {
                     bc.biteCount++;
                     float growScale = 1f + bc.biteCount * 0.12f;
@@ -9359,188 +9664,66 @@ public class SnakeApp extends SimpleApplication {
         // ── Главный цикл ──────────────────────────────────────────────────
         @Override
         public void update(float tpf) {
-            tpf = safeTpf(tpf);
-            if (tpf <= 0f || missingRefs("Game.update", app, rootNode, guiNode, assetManager, inputManager, cam, stateManager)) return;
-            // Resize должен обрабатываться в самом начале кадра. Иначе пауза и
-            // Game Over возвращали управление раньше, чем GUI успевал подогнаться.
-            handleGameResizeIfNeeded();
-            updateStatsHUD(tpf);
-            // Пауза — замораживаем всё, но resize уже обработан выше.
-            if (pauseActive && solo) return;
-            if (!solo && !isHost && System.currentTimeMillis() - lastNetPacketMs > 6000L) {
-                showCenter("Связь с хостом потеряна", new ColorRGBA(1f,0.35f,0.25f,1f));
-                backToMenu();
-                return;
-            }
-
-            moveClouds(tpf);
-            updateDayNightCycle(tpf);
-            gameTime += tpf;
-
-            // Сетевая синхронизация времени суток (только хост отсылает)
-            if (!solo && isHost) {
-                dayNetTimer += tpf;
-                if (dayNetTimer >= DAY_NET_INTERVAL) {
-                    dayNetTimer = 0f;
-                    sendNet("DAYTIME|" + dayNightTime);
+            tpf=Math.min(.1f,safeTpf(tpf));
+            if(tpf<=0 || missingRefs("Game.update",app,rootNode,guiNode,assetManager,inputManager,cam,stateManager))return;
+            handleGameResizeIfNeeded();updateStatsHUD(tpf);pumpNetwork(tpf);
+            if(pauseActive && solo)return;
+            if(!solo && !isHost && System.currentTimeMillis()-lastNetPacketMs>10000L){backToMenu();return;}
+            cameraDt=tpf;
+            if(!gameOver){
+                gameTime+=tpf;moveClouds(tpf);updateDayNightCycle(tpf);
+                if(solo || isHost){
+                    nextEventTimer-=tpf;
+                    if(nextEventTimer<=0 && !ballRainActive && !weatherRainActive && !frozenArenaActive && !sandstormActive && (combat==null || !combat.bossAlive())){
+                        List<Integer> available=new ArrayList<>();
+                        if(mapSettings.enableBallRain)available.add(0);
+                        if(mapSettings.enableRain)available.add(1);
+                        if(mapSettings.enableFrozenArena)available.add(2);
+                        if(mapSettings.enableSandstorm)available.add(3);
+                        if(!available.isEmpty()){
+                            int event=available.get(eventRng.nextInt(available.size()));
+                            if(event==0)startBallRainEvent();if(event==1)startWeatherRainEvent();
+                            if(event==2)startFrozenArenaEvent();if(event==3)startSandstormEvent();
+                        }
+                        nextEventTimer=40f+eventRng.nextFloat()*25f;
+                    }
                 }
+                updateBallRain(tpf);updateWeatherRain(tpf);updateFrozenArena(tpf);updateSandstorm(tpf);
+                updateExternalMap(tpf);
+                if(mapSettings.enableRegularFood && (solo || isHost) && foodItems.stream().filter(f->!f.isDebris).count()<effectiveMaxFood){
+                    if(solo)addOneFood();else hostAddAndBroadcastFood();
+                }
+                fixedAccumulator=Math.min(.1f,fixedAccumulator+tpf);
+                while(fixedAccumulator>=ArenaRules.STEP && !gameOver){
+                    float dt=ArenaRules.STEP;fixedAccumulator-=dt;
+                    if(combat==null){dashTimer=Math.max(0,dashTimer-dt);dashCooldown=Math.max(0,dashCooldown-dt);}
+                    for(int i=0;i<snakes.size();i++){
+                        SnakePlayer s=snakes.get(i);if(s.isDead())continue;
+                        if(isHost && i!=myIndex){
+                            float age=commandAge.getOrDefault(i,0f)+dt;commandAge.put(i,age);
+                            if(age>.4f){s.setMoving(false);s.setBraking(false);s.setTurnLeft(false);s.setTurnRight(false);remoteFire[i]=false;}
+                        }
+                        float mult=combat==null?(i==myIndex&&dashTimer>0?DASH_SPEED_MULT:1f):combat.speedMultiplier(i);
+                        s.update(dt,effectiveSnakeSpeed*waterMultiplierFor(s)*frozenSpeedMult*mult,effectiveTurnSpeed,SEG_SPACING);
+                    }
+                    checkCollisions(dt);
+                    if(combat!=null && !gameOver)combat.step(dt,remoteFire);
+                    if(mapIndex==2){if(solo||isHost){updatePits(dt);checkPits();}else updatePitsVisualOnly(dt);}
+                }
+                updateBlackCubes(tpf);interpolateClientCubes(tpf);
+                updateCactusRespawns(tpf);updateClientCactusStickRequests(tpf);
+                if(isHost){clientTimeoutCheckTimer+=tpf;if(clientTimeoutCheckTimer>=1){clientTimeoutCheckTimer=0;checkClientTimeouts();}}
+                checkWinCondition();
+                if(!solo && isHost){dayNetTimer+=tpf;if(dayNetTimer>=DAY_NET_INTERVAL){dayNetTimer=0;sendNet("DAYTIME|"+dayNightTime);}}
             }
-
-            // Обновление рывка
-            if (dashTimer > 0f) dashTimer -= tpf;
-            if (dashCooldown > 0f) {
-                dashCooldown -= tpf;
-                if (dashCooldown < 0f) dashCooldown = 0f;
-            }
+            syncPlayers(tpf);
+            if(combat!=null){dashCooldown=combat.dashCooldown(myIndex);dashTimer=combat.dashTime(myIndex);combat.frame(tpf,gameOver);}
             updateDashHUD();
-
-            // Таймер игры
-            int mins = (int)(gameTime/60); int secs = (int)(gameTime%60);
-            if (gameTimerText != null) gameTimerText.setText(String.format("%d:%02d", mins, secs));
-
-            // Планировщик случайных ивентов (хост/соло) — повторяются каждые 2–5 мин
-						if ((solo || isHost) && !ballRainActive && !weatherRainActive && !frozenArenaActive && !sandstormActive && nextEventTimer > 0) {
-								nextEventTimer -= tpf;
-								if (nextEventTimer <= 0) {
-										if (mapIndex == 1) {
-												// На пустыне: только шариковый дождь, ледяная арена и песчаная буря
-												int evt = eventRng.nextInt(3);
-												if (evt == 0) startBallRainEvent();
-												else if (evt == 1) startFrozenArenaEvent();
-												else startSandstormEvent();
-										} else {
-												int evtChoice = eventRng.nextInt(3);
-												if (evtChoice == 0) startBallRainEvent();
-												else if (evtChoice == 1) startWeatherRainEvent();
-												else startFrozenArenaEvent();
-										}
-								}
-						}
-
-            updateBallRain(tpf);
-            updateWeatherRain(tpf);
-            updateFrozenArena(tpf);
-						updateSandstorm(tpf);
-
-            updateExternalMap(tpf);
-
-            if (centerMsgTimer>0) {
-                centerMsgTimer -= tpf;
-                if (centerMsgTimer<=0 && centerMsg != null) centerMsg.setColor(new ColorRGBA(1f,1f,0.2f,0f));
-                else {
-                    float a = Math.min(1f, centerMsgTimer);
-                    if (centerMsg != null) { ColorRGBA c = centerMsg.getColor().clone(); c.a=a; centerMsg.setColor(c); }
-                }
-            }
-
-            if (gameOver) {
-                if (!gameoverUIActive) {
-                    String winner = "НИКТО";
-                    for (SnakePlayer s : snapshot(snakes)) if (s != null && !s.isDead()) { winner = s.getName(); break; }
-                    showGameoverOverlay(winner);
-                }
-                updateActiveCamera(tpf);
-                updateHUD(); updatePlayerTabText();
-                for (SnakePlayer sp:snakes) sp.updateNameTag(cam);
-                return;
-            }
-
-            // Спавн еды
-            long regularFood = foodItems.stream().filter(f->!f.isDebris).count();
-            if (mapSettings.enableRegularFood && regularFood<effectiveMaxFood) { if (solo) addOneFood(); else if (isHost) hostAddAndBroadcastFood(); }
-            if (isHost) checkWinCondition();
-
-            // Обновить змей (с замедлением от воды и рывком)
-            float effectiveSpeed = effectiveSnakeSpeed * waterSpeedMultiplier * frozenSpeedMult;
-            if (dashTimer > 0f && myIndex < snakes.size() && !snakes.get(myIndex).isDead()) {
-                // Рывок применяется только к локальному игроку
-                for (int i = 0; i < snakes.size(); i++) {
-                    float spd = (i == myIndex) ? effectiveSpeed * DASH_SPEED_MULT : effectiveSpeed;
-                    if (!snakes.get(i).isDead()) snakes.get(i).update(tpf, spd, effectiveTurnSpeed, SEG_SPACING);
-                }
-            } else {
-                for (SnakePlayer s : snakes) if (!s.isDead()) s.update(tpf, effectiveSpeed, effectiveTurnSpeed, SEG_SPACING);
-            }
-
-						if (!solo && isHost) {
-								clientTimeoutCheckTimer += tpf;
-								if (clientTimeoutCheckTimer >= 1.0f) {
-										clientTimeoutCheckTimer -= 1.0f;
-										checkClientTimeouts();
-								}
-						}
-
-            checkCollisions(tpf);
-
-            // Проверка ям (карта 2)
-            if (mapIndex==2) {
-                if (solo || isHost) {
-                    updatePits(tpf);
-                    checkPits();
-                } else {
-                    updatePitsVisualOnly(tpf);
-                }
-            }
-
-            // Сетевые отправки
-            if (!solo) {
-                if (!isHost) {
-                    pingTimer -= tpf;
-                    if (pingTimer <= 0f) {
-                        pingTimer = 1.0f;
-                        long seq = ++pingSeq;
-                        pendingPings.put(seq, System.currentTimeMillis());
-                        sendNet("PING|" + seq + "|" + pendingPings.get(seq));
-                    }
-                }
-                netSendTimer += tpf;
-                if (netSendTimer>=NET_SEND_INTERVAL && myIndex<snakes.size()) {
-                    netSendTimer=0;
-                    SnakePlayer me = snakes.get(myIndex);
-                    Vector3f h = me.getHeadPos();
-                    int inputMask = (me.isTurnLeft()?1:0) | (me.isTurnRight()?2:0) | (me.isMoving()?4:0);
-                    if (inputMask != lastSentInputMask) {
-                        lastSentInputMask = inputMask;
-                        sendNet("INPUT|"+myIndex+"|"+(me.isTurnLeft()?1:0)+"|"+(me.isTurnRight()?1:0)+"|"+(me.isMoving()?1:0));
-                    }
-                    sendNet("STATE|"+myIndex+"|"+h.x+"|"+h.y+"|"+h.z+"|"+me.getHeadingAngle()
-                            +"|"+me.getScore()+"|"+me.getLength()+"|"+(me.isDead()?1:0));
-                }
-                if (isHost) {
-                    cubeNetTimer += tpf;
-										if (cubeNetTimer >= CUBE_NET_INTERVAL) {
-												cubeNetTimer = 0f;
-												for (BlackCube bc : snapshot(blackCubes)) {
-														if (!bc.active || bc.phy == null) continue;
-														Vector3f pos = bc.phy.getPhysicsLocation(null);
-														Quaternion rot = bc.phy.getPhysicsRotation(null);
-														sendNet("CUBE_STATE|" + bc.id + "|" + pos.x + "|" + pos.y + "|" + pos.z 
-																		+ "|" + rot.getX() + "|" + rot.getY() + "|" + rot.getZ() + "|" + rot.getW());
-												}
-										}
-                }
-            }
-
-            updateActiveCamera(tpf); updateHUD(); updatePlayerTabText();
-            for (SnakePlayer sp:snakes) sp.updateNameTag(cam);
-						updateCactusRespawns(tpf);
-						updateClientCactusStickRequests(tpf);
-						interpolateClientCubes(tpf);
-            updateBlackCubes(tpf);
-						
-						if (lastW == -1 || lastH == -1) {
-								lastW = cam.getWidth();
-								lastH = cam.getHeight();
-						}
-
-						if (cam.getWidth() != lastW || cam.getHeight() != lastH) {
-
-								lastW = cam.getWidth();
-								lastH = cam.getHeight();
-
-								refreshGameGuiLayout();
-						}
-						
+            if(gameTimerText!=null)gameTimerText.setText(String.format("%d:%02d",(int)(gameTime/60),(int)(gameTime%60)));
+            if(centerMsgTimer>0){centerMsgTimer-=tpf;if(centerMsg!=null){ColorRGBA c=centerMsg.getColor().clone();c.a=Math.max(0,Math.min(1,centerMsgTimer));centerMsg.setColor(c);}}
+            if(gameOver && !gameoverUIActive)showGameoverOverlay(mapSettings.enableCombat?"ЗАБЕГ ЗАВЕРШЁН":snakes.stream().filter(s->!s.isDead()).map(SnakePlayer::getName).findFirst().orElse("НИКТО"));
+            updateActiveCamera(tpf);updateHUD();updatePlayerTabText();
+            for(SnakePlayer s:snakes)s.updateNameTag(cam);
         }
 
         /** Обновление анимации шипов (карта 2) — вызывается каждый кадр */
@@ -9629,18 +9812,19 @@ public class SnakeApp extends SimpleApplication {
                     }
 
                     if (centerMsg != null) {
-                        centerMsg.setSize(38f * S);
-                        centerMsg.setLocalTranslation(W / 2f - centerMsg.getLineWidth() / 2f, H / 2f, 0f);
+                        centerMsg.setSize(28f * Math.max(.9f,S));
+                        if(centerMsg.getLineWidth()>W*.90f)centerMsg.setSize(centerMsg.getSize()*W*.90f/centerMsg.getLineWidth());
+                        centerMsg.setLocalTranslation(W / 2f - centerMsg.getLineWidth() / 2f, H * .72f, 4f);
                     }
 
-                    // FPS / AVG / PING — одна ровная полоска слева сверху.
+                    // FPS / AVG / PING в правом верхнем углу, отдельно от боевой статистики.
                     if (netStatsBg != null) {
                         netStatsBg.setMesh(new Box(190f * S, 18f * S, 0.2f));
-                        netStatsBg.setLocalTranslation(206f * S, H - 28f * S, 2f);
+                        netStatsBg.setLocalTranslation(W-206f * S, H - 28f * S, 2f);
                     }
                     if (netStatsText != null) {
                         netStatsText.setSize(13f * S);
-                        netStatsText.setLocalTranslation(22f * S, H - 23f * S, 3f);
+                        netStatsText.setLocalTranslation(W-390f * S, H - 23f * S, 3f);
                     }
 
                     float cx = W - 76f * S;
@@ -9811,6 +9995,7 @@ public class SnakeApp extends SimpleApplication {
 
 				// Проверка столкновений
 				private void checkCollisions(float tpf) {
+                        if("tank-battle-2d".equals(mapSettings.mode))return;
 						if (!solo && !isHost) return; // клиенты не проверяют коллизии локально
 
 						for (int i = 0; i < snakes.size(); i++) {
@@ -9827,7 +10012,7 @@ public class SnakeApp extends SimpleApplication {
 										continue;
 								}
 								for (int j = 0; j < snakes.size(); j++) {
-										if (i == j || snakes.get(j).isDead()) continue;
+										if (mapSettings.enableCombat || i == j || snakes.get(j).isDead()) continue;
 										SnakePlayer other = snakes.get(j);
 										if (other.bodyContains(h, SEG_SPACING * 0.85f) || h.distance(other.getHeadPos()) < SEG_SPACING) {
 												killSnake(i, "столкновение с " + other.getName());
@@ -9837,8 +10022,8 @@ public class SnakeApp extends SimpleApplication {
 								// Check food for this snake
 								checkFoodFor(s, i);
 								if (mapIndex == 1) checkCactusCollisions(s, i, tpf);
-								if (frozenArenaActive) checkIceSpikeCollisions();
 						}
+                    if (frozenArenaActive) checkIceSpikeCollisions();
 				}
 
 				// helper-методы
@@ -10127,18 +10312,20 @@ public class SnakeApp extends SimpleApplication {
             if (snakeIndex < 0 || snakeIndex >= snakes.size()) return;
             SnakePlayer snake = snakes.get(snakeIndex);
             if (snake.isDead()) return;
+            if(!solo && !isHost){if(playLocalSound && snakeIndex==myIndex){if(bad)playSound(mmmSound);else playEatSound();}return;}
             if (bad) {
                 snake.shrink();
                 if (playLocalSound && snakeIndex == myIndex) playSound(mmmSound);
             } else {
                 if (mapSettings.allowGrowth) snake.grow(assetManager);
                 snake.addScore(scoreDelta);
+                if(combat!=null)combat.food(snakeIndex,false);
                 if (playLocalSound && snakeIndex == myIndex) playEatSound();
             }
         }
 
 	        private void killSnake(int idx, String reason) {
-            if (idx>=snakes.size()) return;
+            if (idx<0 || idx>=snakes.size()) return;
             SnakePlayer s = snakes.get(idx);
             if (s.isDead()) return;
             List<Vector3f> debrisPositions = s.getSegmentPositions();
@@ -10155,10 +10342,10 @@ public class SnakeApp extends SimpleApplication {
         }
 
         private void checkWinCondition() {
-            if (gameOver) return;
+            if (gameOver || (!solo && !isHost)) return;
             List<SnakePlayer> alive = new ArrayList<>();
             for (SnakePlayer s : snapshot(snakes)) if (s != null && !s.isDead()) alive.add(s);
-            if (alive.size()<=1) {
+            if (alive.isEmpty() || (!solo && !mapSettings.enableCombat && allPlayers.size()>1 && alive.size()==1)) {
                 gameOver=true; exitTimer=8f;
                 String winner = alive.isEmpty() ? "НИКТО" : alive.get(0).getName();
                 showCenter(winner+" ПОБЕДИЛ!", new ColorRGBA(1f,0.85f,0.1f,1f));
@@ -10214,15 +10401,15 @@ public class SnakeApp extends SimpleApplication {
         }
 
         private void updateCamera() {
-            if (freeCameraMode || cam == null || snakes == null || snakes.isEmpty()) return;
-            SnakePlayer target;
-            if (spectating) target = snakes.get(spectateTarget);
-            else if (myIndex<snakes.size()) target = snakes.get(myIndex);
-            else return;
-            Vector3f head = target.getHeadPos();
-            Vector3f dir  = target.getDirection();
-            cam.setLocation(head.add(dir.negate().mult(mapSettings.cameraDistance)).add(0,mapSettings.cameraHeight,0));
-            cam.lookAt(head.add(dir.mult(mapSettings.cameraLookAhead)), Vector3f.UNIT_Y);
+            if(freeCameraMode || cam==null || snakes.isEmpty())return;
+            int idx=spectating?Math.max(0,Math.min(spectateTarget,snakes.size()-1)):myIndex;
+            if(idx<0 || idx>=snakes.size() || snakes.get(idx).isDead())return;
+            SnakePlayer target=snakes.get(idx);Vector3f head=target.getHeadPos(),dir=target.getDirection();
+            Vector3f desired=head.subtract(dir.mult(mapSettings.cameraDistance)).addLocal(0,mapSettings.cameraHeight,0);
+            desired.y=Math.max(desired.y,getSurfaceHeight(desired.x,desired.z)+2f);
+            if(!cameraReady || cam.getLocation().distance(desired)>40){cam.setLocation(desired);cameraReady=true;}
+            else cam.setLocation(cam.getLocation().interpolateLocal(desired,ArenaRules.damping(9,cameraDt)));
+            cam.lookAt(head.add(dir.mult(mapSettings.cameraLookAhead)),Vector3f.UNIT_Y);
         }
 
         private void moveClouds(float tpf) {
@@ -10237,7 +10424,7 @@ public class SnakeApp extends SimpleApplication {
                 if (s instanceof Node n) {
                     for (Spatial c : n.getChildren()) {
                         if (c instanceof Geometry gg)
-                            gg.setShadowMode(RenderQueue.ShadowMode.Cast);
+                            gg.setShadowMode(RenderQueue.ShadowMode.Off);
                     }
                 }
             }
@@ -10548,6 +10735,7 @@ public class SnakeApp extends SimpleApplication {
         private void backToMenu() {
             if (rainSound!=null) { rainSound.stop(); detachQuietly(rootNode, rainSound); }
             if (!solo && isHost) sendNet("HOST_LEFT");
+            if(!solo && !isHost)sendNet("LEAVE|"+myIndex);
             netRunning.set(false);
             closeQuietly(socket);
             for (SnakePlayer sp : snapshot(snakes)) if (sp != null) sp.cleanup(guiNode);
@@ -10579,6 +10767,10 @@ public class SnakeApp extends SimpleApplication {
 
         @Override
         public void cleanup() {
+            if(combat!=null){combat.cleanup();combat=null;}
+            for(com.jme3.input.RawInputListener l:trackedRaw)inputManager.removeRawInputListener(l);
+            for(InputListener l:trackedActions)inputManager.removeListener(l);
+            trackedRaw.clear();trackedActions.clear();inbound.clear();links.clear();
             if (mapDef != null && mapCtx != null) {
                 try { mapDef.cleanup(mapCtx); }
                 catch (Exception e) { logSafe("Map.cleanup", e); }
@@ -10605,6 +10797,7 @@ public class SnakeApp extends SimpleApplication {
             boolean chasing = false;
             float patrolAngle=(float)(Math.random()*Math.PI*2), patrolChangeTimer=0f;
             final Map<Integer,Float> hitCooldowns = new HashMap<>();
+            int hp=4;
             int biteCount = 0; // количество укусов — куб растёт и замедляется
             BlackCube(int id, Geometry geo, RigidBodyControl phy) { this.id=id; this.geo=geo; this.phy=phy; }
             void updatePhy(RigidBodyControl newPhy) { this.phy = newPhy; }
@@ -10757,6 +10950,11 @@ public class SnakeApp extends SimpleApplication {
 
         private BitmapText nameTag;
         private BitmapText faceText;
+        private Node faceNode;
+        private boolean modelVisible=true;
+        private Vector3f netTarget;
+        private float netAngle;
+        private static final Mesh BODY_MESH=new Sphere(12,16,SEG_R);
         private final Node guiRef;
         private final Camera camRef;
 
@@ -10787,13 +10985,16 @@ public class SnakeApp extends SimpleApplication {
             nameTag.setColor(getColorFromMat(mat));
             guiNode.attachChild(nameTag);
 
-            // Лицо больше не GUI-спрайт. Это 3D BitmapText на поверхности головы,
-            // поэтому оно не просвечивает через стены/объекты как overlay.
-            faceText = new BitmapText(font);
-            faceText.setSize(0.20f);
-            faceText.setText(":3");
-            faceText.setColor(new ColorRGBA(0.01f, 0.01f, 0.012f, 1f));
-            parentNode.attachChild(faceText);
+            faceNode=new Node("SnakeEyes");
+            for(int side=-1;side<=1;side+=2) {
+                Geometry eye=new Geometry("Eye",new Sphere(10,12,.105f));
+                eye.setMaterial(unshaded(am,new ColorRGBA(1,.98f,.9f,1)));
+                eye.setLocalTranslation(side*.15f,.17f,.17f);faceNode.attachChild(eye);
+                Geometry pupil=new Geometry("Pupil",new Sphere(8,10,.048f));
+                pupil.setMaterial(unshaded(am,new ColorRGBA(.015f,.025f,.03f,1)));
+                pupil.setLocalTranslation(side*.15f,.18f,.26f);faceNode.attachChild(pupil);
+            }
+            parentNode.attachChild(faceNode);
         }
 
         private ColorRGBA getColorFromMat(Material m) {
@@ -10804,7 +11005,7 @@ public class SnakeApp extends SimpleApplication {
         }
 
         private void addSegment(Vector3f pos) {
-            Geometry g = new Geometry("Seg"+segments.size(), new Sphere(12,12,SEG_R));
+            Geometry g = new Geometry("Seg"+segments.size(), BODY_MESH);
             Material sm = baseMat.clone();
             float factor = Math.max(0.5f, 1f - segments.size()*0.04f);
             // Поддержка Unshaded ("Color") и Lighting ("Diffuse")
@@ -10834,140 +11035,67 @@ public class SnakeApp extends SimpleApplication {
 
         public void setMoving(boolean v) { this.movingInput=v; }
         public boolean isMoving() { return movingInput; }
+        private boolean braking;
+        public void setBraking(boolean value) { braking=value; }
 
         public void setVisible(boolean visible) {
+            modelVisible=visible;
+            if(faceNode!=null)faceNode.setCullHint(visible?Spatial.CullHint.Inherit:Spatial.CullHint.Always);
             Spatial.CullHint hint = visible ? Spatial.CullHint.Inherit : Spatial.CullHint.Always;
             for (Geometry g : segments) if (g != null) g.setCullHint(hint);
             if (nameTag != null) nameTag.setCullHint(hint);
             if (faceText != null) faceText.setCullHint(hint);
         }
 
-				public void update(float tpf, float maxSpeed, float turnSpeed, float spacing) {
-						tpf = safeTpf(tpf);
-						if (dead || tpf <= 0f || segments.isEmpty() || segPos.isEmpty()) return;
-						if (selfCollisionGraceTimer > 0f) selfCollisionGraceTimer = Math.max(0f, selfCollisionGraceTimer - tpf);
-						if (movingInput) currentSpeed = Math.min(maxSpeed, currentSpeed + ACCEL * accelMult * tpf);
-						else             currentSpeed = Math.max(0f,         currentSpeed - DECEL * decelMult * tpf);
-
-						if (iceMode) {
-								// === ЛЕДЯНОЙ РЕЖИМ ===
-								// 1. Инерция сохраняется: скорость отдельно от ввода
-								Vector3f headPos = segPos.get(0);
-
-								// Вычисляем наклон поверхности под головой
-								float slopeX = gameState.getSurfaceHeight(headPos.x + 0.5f, headPos.z)
-														 - gameState.getSurfaceHeight(headPos.x - 0.5f, headPos.z);
-								float slopeZ = gameState.getSurfaceHeight(headPos.x, headPos.z + 0.5f)
-														 - gameState.getSurfaceHeight(headPos.x, headPos.z - 0.5f);
-								Vector3f gravitySlope = new Vector3f(-slopeX, 0f, -slopeZ).normalizeLocal()
-																				 .multLocal(GRAVITY_ICE * tpf);
-
-								// Влияние вперёд (направление взгляда) добавляет тягу
-								if (movingInput) {
-										iceVelocity.addLocal(direction.mult(ACCEL * tpf));
-								}
-
-								// Гравитационное ускорение вдоль склона
-								iceVelocity.addLocal(gravitySlope);
-
-								// Трение (очень слабое): замедляем, но только если скорость не нулевая
-								float friction = ICE_FRICTION * tpf;
-								// синхронизируем направление взгляда с фактическим движением
-								if (iceVelocity.lengthSquared() > 0.01f) {
-										headingAngle = (float) Math.atan2(iceVelocity.x, iceVelocity.z);
-										direction = calcDir(headingAngle);
-								} else {
-										iceVelocity.set(0,0,0);
-								}
-
-								// Ограничение максимальной скорости (чтобы не разгонялась бесконечно)
-								float iceMaxSpeed = GameState.SPEED * 1.8f;
-								if (iceVelocity.length() > iceMaxSpeed) {
-										iceVelocity.normalizeLocal().multLocal(iceMaxSpeed);
-								}
-
-								// Применяем поворот плавно (с инерцией): 'direction' плавно доворачиваем к желаемому
-								if (turnLeft || turnRight) {
-										float turnAngle = (turnLeft ? GameState.TURN_SPEED : -GameState.TURN_SPEED) * tpf * 0.6f; // очень медленный поворот
-										Quaternion rot = new Quaternion().fromAngleAxis(turnAngle, Vector3f.UNIT_Y);
-										iceVelocity = rot.mult(iceVelocity);
-										headingAngle += turnAngle;
-								}
-
-								// Перемещаем голову согласно iceVelocity
-								Vector3f newHead = headPos.add(iceVelocity.mult(tpf));
-								float targetY = gameState.getSurfaceHeight(newHead.x, newHead.z) + SEG_R + 0.1f;
-								currentHeadY += (targetY - currentHeadY) * Math.min(1f, 8f * tpf); // плавное изменение высоты
-								newHead.y = currentHeadY;
-								segPos.get(0).set(newHead);
-								segments.get(0).setLocalTranslation(newHead);
-								tailCurrentY.set(0, currentHeadY);
-
-								// Обновляем хвост как обычно (с прилипанием к поверхности)
-								for (int i = 1; i < segPos.size(); i++) {
-										Vector3f prev = segPos.get(i - 1), cur = segPos.get(i);
-										Vector3f diff = prev.subtract(cur);
-										float dist = diff.length();
-										if (dist > GameState.SEG_SPACING) {
-												cur.addLocal(diff.normalize().mult(dist - GameState.SEG_SPACING));
-												float curTargetY = gameState.getSurfaceHeight(cur.x, cur.z) + SEG_R;
-												float curCurrentY = tailCurrentY.get(i);
-												curCurrentY += (curTargetY - curCurrentY) * Math.min(1f, 8f * tpf);
-												cur.y = curCurrentY;
-												tailCurrentY.set(i, curCurrentY);
-												segments.get(i).setLocalTranslation(cur);
-										}
-								}
-
-								updateCactusAttachments(tpf);
-								return; // выходим, не выполняя старую логику движения
-						}
-
-						float effectiveTurnSpeed = turnSpeed * (currentSpeed / maxSpeed);
-						if (turnLeft)  headingAngle += effectiveTurnSpeed * tpf;
-						if (turnRight) headingAngle -= effectiveTurnSpeed * tpf;
-						direction = calcDir(headingAngle);
-
-						if (currentSpeed < 0.01f) return;
-
-						// === Голова с плавной высотой ===
-						Vector3f newHead = segPos.get(0).add(direction.mult(currentSpeed * tpf));
-						float targetY = gameState.getSurfaceHeight(newHead.x, newHead.z) + SEG_R + 0.1f;
-						float maxDy = 30f * tpf;                           // макс. вертикальная скорость
-						if (Math.abs(targetY - currentHeadY) < maxDy) {
-								currentHeadY = targetY;
-						} else {
-								currentHeadY += Math.signum(targetY - currentHeadY) * maxDy;
-						}
-						newHead.y = currentHeadY;
-						segPos.get(0).set(newHead);
-						segments.get(0).setLocalTranslation(newHead);
-						tailCurrentY.set(0, currentHeadY);
-
-						// === Хвост с плавной высотой ===
-						for (int i = 1; i < segPos.size(); i++) {
-								Vector3f prev = segPos.get(i - 1), cur = segPos.get(i);
-								Vector3f diff = prev.subtract(cur);
-								float dist = diff.length();
-								if (dist > spacing) {
-										cur.addLocal(diff.normalize().mult(dist - spacing));
-										// плавная высота для этого сегмента
-										float curTargetY = gameState.getSurfaceHeight(cur.x, cur.z) + SEG_R;
-										float curCurrentY = tailCurrentY.get(i);
-										float curMaxDy = 10f * tpf;
-										if (Math.abs(curTargetY - curCurrentY) < curMaxDy) {
-												curCurrentY = curTargetY;
-										} else {
-												curCurrentY += Math.signum(curTargetY - curCurrentY) * curMaxDy;
-										}
-										cur.y = curCurrentY;
-										tailCurrentY.set(i, curCurrentY);
-										segments.get(i).setLocalTranslation(cur);
-								}
-						}
-
-						updateCactusAttachments(tpf);
-				}
+				public void update(float tpf,float maxSpeed,float turnSpeed,float spacing) {
+            tpf=Math.min(.05f,safeTpf(tpf));
+            if(dead || tpf<=0 || segments.isEmpty())return;
+            maxSpeed=Math.max(.1f,ArenaRules.finite(maxSpeed,8f));
+            selfCollisionGraceTimer=Math.max(0,selfCollisionGraceTimer-tpf);
+            boolean boosting=maxSpeed>gameState.effectiveSnakeSpeed*1.5f;
+            float target=(movingInput || boosting) && !braking?maxSpeed:0;
+            float acceleration=(target>currentSpeed?ACCEL*accelMult:DECEL*decelMult)*(braking?4:boosting?5:1);
+            currentSpeed+=ArenaRules.clamp(target-currentSpeed,-acceleration*tpf,acceleration*tpf);
+            int steering=(turnLeft?1:0)-(turnRight?1:0);
+            headingAngle+=steering*turnSpeed*turnMult*(iceMode?.62f:Math.max(.22f,currentSpeed/maxSpeed))*tpf;
+            headingAngle=(float)Math.atan2(Math.sin(headingAngle),Math.cos(headingAngle));
+            direction=calcDir(headingAngle);
+            Vector3f h=segPos.get(0);
+            if(iceMode){
+                float slopeX=gameState.getSurfaceHeight(h.x+.5f,h.z)-gameState.getSurfaceHeight(h.x-.5f,h.z);
+                float slopeZ=gameState.getSurfaceHeight(h.x,h.z+.5f)-gameState.getSurfaceHeight(h.x,h.z-.5f);
+                if((movingInput || boosting) && !braking)iceVelocity.addLocal(direction.mult(ACCEL*accelMult*tpf));
+                iceVelocity.addLocal(-slopeX*GRAVITY_ICE*tpf,0,-slopeZ*GRAVITY_ICE*tpf);
+                iceVelocity.multLocal((float)Math.exp(-(braking?6f:1.1f)*decelMult*tpf));
+                float cap=maxSpeed*1.25f;if(iceVelocity.lengthSquared()>cap*cap)iceVelocity.normalizeLocal().multLocal(cap);
+                h.addLocal(iceVelocity.mult(tpf));currentSpeed=iceVelocity.length();
+            }else h.addLocal(direction.mult(currentSpeed*tpf));
+            if(netTarget!=null){
+                float alpha=ArenaRules.damping(14f,tpf),distance=h.distance(netTarget);
+                if(distance>10f){
+                    Vector3f offset=netTarget.subtract(h);for(Vector3f p:segPos)p.addLocal(offset);
+                    selfCollisionGraceTimer=SELF_COLLISION_GRACE_AFTER_CORRECTION;
+                } else h.interpolateLocal(netTarget,alpha);
+                headingAngle+=ArenaRules.angleDelta(headingAngle,netAngle)*alpha;
+                direction=calcDir(headingAngle);
+                netTarget.addLocal(calcDir(netAngle).mult(currentSpeed*tpf));
+            }
+            currentHeadY=gameState.getSurfaceHeight(h.x,h.z)+SEG_R;
+            h.y=currentHeadY;tailCurrentY.set(0,h.y);
+            segments.get(0).setLocalTranslation(h);
+            segments.get(0).setLocalScale(1.12f,1f,1.2f);
+            segments.get(0).setLocalRotation(new Quaternion().fromAngleAxis(headingAngle,Vector3f.UNIT_Y));
+            for(int i=1;i<segPos.size();i++){
+                Vector3f prev=segPos.get(i-1),p=segPos.get(i);
+                float dx=prev.x-p.x,dz=prev.z-p.z,dist=(float)Math.sqrt(dx*dx+dz*dz);
+                if(dist>spacing){float move=(dist-spacing)/dist;p.x+=dx*move;p.z+=dz*move;}
+                p.y=gameState.getSurfaceHeight(p.x,p.z)+SEG_R;tailCurrentY.set(i,p.y);
+                Geometry g=segments.get(i);g.setLocalTranslation(p);
+                if(dist>.0001f)g.setLocalRotation(new Quaternion().fromAngleAxis((float)Math.atan2(dx,dz),Vector3f.UNIT_Y));
+                float taper=i==segPos.size()-1?.70f:1f;g.setLocalScale(taper,taper,1.14f);
+            }
+            updateCactusAttachments(tpf);
+        }
 
 				// В SnakePlayer.update добавить расчёт pitch
 				private float calculatePitch(Vector3f headPos) {
@@ -10993,84 +11121,26 @@ public class SnakeApp extends SimpleApplication {
 								iceVelocity.set(0,0,0);
 						}
 				}        public void updateNameTag(Camera cam) {
-            if (dead || segPos.isEmpty()) return;
-            Vector3f head = segPos.get(0);
-            Vector3f nameWorldPos = head.add(0,1.4f,0);
-            Vector3f nameScreen = cam.getScreenCoordinates(nameWorldPos);
-            boolean visible = !(nameScreen.z < 0 || nameScreen.z > 1);
-            if (!visible) {
-                if (nameTag != null) nameTag.setLocalTranslation(-9999,0,0);
-                if (faceText != null) faceText.setCullHint(Spatial.CullHint.Always);
-                return;
-            }
-            if (nameTag != null) {
-                if (SnakeApp.nameTagsEnabled) nameTag.setLocalTranslation(nameScreen.x-nameTag.getLineWidth()/2, nameScreen.y, 1);
+            if(dead || segPos.isEmpty() || !modelVisible)return;
+            Vector3f h=segPos.get(0);
+            if(faceNode!=null){faceNode.setLocalTranslation(h);faceNode.setLocalRotation(new Quaternion().fromAngleAxis(headingAngle,Vector3f.UNIT_Y));}
+            Vector3f screen=cam.getScreenCoordinates(h.add(0,1.2f,0));
+            if(nameTag!=null){
+                if(SnakeApp.nameTagsEnabled && screen.z>=0 && screen.z<=1)nameTag.setLocalTranslation(screen.x-nameTag.getLineWidth()/2,screen.y,1);
                 else nameTag.setLocalTranslation(-9999,0,0);
-            }
-            if (faceText != null) {
-                // 3D-смайлик лежит на передней части первого шарика.
-                // Так он является частью мира, а не экранным overlay, и нормально
-                // скрывается стенами/объектами по depth-test.
-                Vector3f faceDir = (direction == null ? Vector3f.UNIT_Z : direction.clone());
-                faceDir.y = 0f;
-                if (faceDir.lengthSquared() < 0.0001f) faceDir.set(Vector3f.UNIT_Z);
-                faceDir.normalizeLocal();
-
-                Vector3f up = Vector3f.UNIT_Y.clone();
-                Vector3f right = up.cross(faceDir);
-                if (right.lengthSquared() < 0.0001f) right.set(Vector3f.UNIT_X);
-                right.normalizeLocal();
-                up = faceDir.cross(right).normalizeLocal();
-
-                Quaternion rot = new Quaternion();
-                rot.fromAxes(right, up, faceDir);
-                faceText.setLocalRotation(rot);
-
-                float tw = Math.max(0.01f, faceText.getLineWidth());
-                float th = Math.max(0.01f, faceText.getLineHeight());
-                Vector3f facePos = head.add(faceDir.mult(SEG_R * 1.06f))
-                        .add(up.mult(SEG_R * 0.20f))
-                        .subtract(right.mult(tw * 0.50f))
-                        .subtract(up.mult(th * 0.45f));
-                faceText.setLocalTranslation(facePos);
-                faceText.setCullHint(Spatial.CullHint.Inherit);
             }
         }
 
 
-        public void applyNetState(float x, float y, float z, float angle, int sc, int remoteLen, boolean isDead) {
-            if (!segPos.isEmpty()) {
-                Vector3f netHead = new Vector3f(x, y, z);
-                Vector3f localHead = segPos.get(0);
-                float delta = localHead.distance(netHead);
-
-                float angleAlpha = delta > 1.6f ? NET_SMOOTH_STRONG : NET_SMOOTH_LIGHT;
-                headingAngle = FastMath.interpolateLinear(angleAlpha, headingAngle, angle);
-                direction = calcDir(headingAngle);
-
-                float posAlpha = delta > 1.6f ? NET_SMOOTH_STRONG : NET_SMOOTH_LIGHT;
-                Vector3f correctedHead = localHead.interpolateLocal(netHead, posAlpha);
-                segPos.get(0).set(correctedHead);
-                segments.get(0).setLocalTranslation(correctedHead);
-
-                if (delta > 1.0f) selfCollisionGraceTimer = SELF_COLLISION_GRACE_AFTER_CORRECTION;
-
-                while (segments.size() < remoteLen) grow(assetManager);
-                while (segments.size() > remoteLen && segments.size() > 2) shrink();
-
-                float spacing = 0.55f;
-                for (int i = 1; i < segPos.size(); i++) {
-                    Vector3f prev = segPos.get(i - 1), cur = segPos.get(i);
-                    Vector3f diff = prev.subtract(cur);
-                    float dist = diff.length();
-                    if (dist > spacing) {
-                        cur.addLocal(diff.normalize().mult(dist - spacing));
-                        segments.get(i).setLocalTranslation(cur);
-                    }
-                }
-            }
-            score = sc;
-            if (isDead && !dead) triggerDeathRemote(parentNode.getParent());
+        public void applyNetState(float x,float y,float z,float angle,int sc,int remoteLen,boolean isDead) {
+            if(!Float.isFinite(x)||!Float.isFinite(y)||!Float.isFinite(z)||!Float.isFinite(angle))return;
+            score=Math.max(0,sc);
+            if(isDead){triggerDeathRemote(parentNode);return;}
+            if(dead || segPos.isEmpty())return;
+            netTarget=new Vector3f(x,y,z);netAngle=angle;
+            remoteLen=Math.max(2,Math.min(ArenaRules.MAX_LENGTH,remoteLen));
+            while(segments.size()<remoteLen)grow(assetManager);
+            while(segments.size()>remoteLen)shrink();
         }
 
 				public int getClosestSegmentIndex(Vector3f worldPos) {
@@ -11231,7 +11301,9 @@ public class SnakeApp extends SimpleApplication {
                 if (phy!=null&&physicsSpace!=null) { phy.setEnabled(false); physicsSpace.remove(phy); }
                 detachQuietly(parentNode, seg);
             }
-            segments.clear(); segPos.clear();
+            segments.clear(); segPos.clear(); tailCurrentY.clear();
+            cleanupCactusAttachments();
+            if(faceNode!=null){faceNode.removeFromParent();faceNode=null;}
         }
 
         public void triggerDeathRemote(Node scene) { triggerDeath(scene); }
@@ -11243,7 +11315,7 @@ public class SnakeApp extends SimpleApplication {
         }
 
         public void grow(AssetManager am) {
-            if (segPos.isEmpty()) return;
+            if (segPos.isEmpty() || segPos.size()>=ArenaRules.MAX_LENGTH) return;
             addSegment(segPos.get(segPos.size()-1).clone());
         }
 
@@ -11253,14 +11325,14 @@ public class SnakeApp extends SimpleApplication {
             Geometry seg=segments.get(idx);
             com.jme3.bullet.control.RigidBodyControl phy=seg.getControl(com.jme3.bullet.control.RigidBodyControl.class);
             if (phy!=null&&physicsSpace!=null) { phy.setEnabled(false); physicsSpace.remove(phy); }
-            detachQuietly(parentNode, seg); segments.remove(idx); segPos.remove(idx);
+            detachQuietly(parentNode, seg); segments.remove(idx); segPos.remove(idx); tailCurrentY.remove(idx);
         }
 
 
 				public void removeSegmentsAtWorldPos(Vector3f worldPos, float radius) {
 						if (dead || segments.size() <= 2) return;
 						float r2 = radius * radius;
-						for (int i = segments.size() - 1; i >= 1; i--) {
+						for (int i = segments.size() - 1; i >= 1 && segments.size() > 2; i--) {
 								Vector3f seg = segPos.get(i);
 								float dx = seg.x - worldPos.x;
 								float dz = seg.z - worldPos.z;
@@ -11273,7 +11345,8 @@ public class SnakeApp extends SimpleApplication {
 										}
 										detachQuietly(parentNode, geom);
 										segments.remove(i);
-										segPos.remove(i);
+                                        segPos.remove(i);
+                                        tailCurrentY.remove(i);
 								}
 						}
 				}
@@ -11300,7 +11373,8 @@ public class SnakeApp extends SimpleApplication {
         }
 
         public void cleanup(Node gui) {
-            cleanupCactusAttachments(); // <-- сначала удаляем прилипшие фрагменты
+            cleanupCactusAttachments();
+            if(faceNode!=null){faceNode.removeFromParent();faceNode=null;}
             if (nameTag!=null) { detachQuietly(gui, nameTag); nameTag=null; }
             if (faceText!=null) { faceText.removeFromParent(); faceText=null; }
             if (!dead&&physicsSpace!=null) {

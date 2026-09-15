@@ -76,6 +76,9 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
     private Material cloudMaterial;
     private Material cloudShadowMaterial;
 
+    private int lastBossWave;
+    private final java.util.Set<Integer> takenPickups=new java.util.HashSet<>();
+    private final java.util.Map<Integer,Float> requestedPickups=new java.util.HashMap<>();
     private final Random rng = new Random();
     private Random mapRng = new Random(1);
     private int arenaSeed = 1;
@@ -227,6 +230,7 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
     public SnakeApp.MapRuntimeSettings settings() {
         SnakeApp.MapRuntimeSettings s = new SnakeApp.MapRuntimeSettings();
         s.mapHalf = 1000f;
+        s.enableCombat = false;
         s.mode = "tank-battle-2d";
         s.maxFood = 1;
         s.snakeSpeed = 2f;
@@ -235,7 +239,7 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
         s.enableRegularFood = false;
         s.enableBadFood = false;
         s.enableBallRain = false;
-        s.enableRain = true;       // оставляем атмосферу включённой, если SnakeApp использует это для окружения
+        s.enableRain = false;       // оставляем атмосферу включённой, если SnakeApp использует это для окружения
         s.enableFrozenArena = false;
         s.enableSandstorm = false;
         s.enableBlackCubesDefault = false;
@@ -269,12 +273,7 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
         decorRoot = new Node("TankBattle2DOutsideDecor");
         uiRoot = new Node("TankBattle2DUI");
 
-				if (ctx.solo || ctx.host) {
-						buildArena(ctx, arenaSeed);
-				} else {
-						seedReceived = false;  // ждём сид от хоста
-				}
-				// mode = Mode.GARAGE; остаётся после условия
+        seedReceived=ctx.solo || ctx.host;
 
         ctx.rootNode.attachChild(world);
         world.attachChild(arenaRoot);
@@ -292,7 +291,7 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
         world.attachChild(cloudRoot);
         ctx.guiNode.attachChild(uiRoot);
 
-        buildArena(ctx, arenaSeed);
+        if(seedReceived)buildArena(ctx, arenaSeed);
         mode = Mode.GARAGE;
     }
 
@@ -625,6 +624,7 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
         botsEnabled = ctx.solo;
         deathTriggered = false;
         gameTime = 0f; score = 0; wave = 1; kills = 0;
+        lastBossWave=0;takenPickups.clear();requestedPickups.clear();
         playerShieldTimer = 0f; rapidTimer = 0f; dualTimer = 0f; sturmAimCharge = 0f;
         mineCharges = 0; netSyncTimer = 0f; airDropTimer = 5f;
         headlightsActive = false;
@@ -647,14 +647,10 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
             showCenter("Мультиплеер: ожидание боя", 2f, new ColorRGBA(0.25f, 0.85f, 1f, 1f));
         }
 
-        Vector3f pickupA = safeSpawnPoint(-31f, -22f, 2.0f);
-        Vector3f pickupB = safeSpawnPoint(31f, 22f, 2.0f);
-				Pickup2D p1 = spawnPickup(ctx, PickupKind.SHIELD, pickupA.x, pickupA.z);
-				Pickup2D p2 = spawnPickup(ctx, PickupKind.REPAIR, pickupB.x, pickupB.z);
-				if (!ctx.solo && p1 != null && p2 != null) {
-						broadcast(ctx, "TB2D_PICKUP|" + PickupKind.SHIELD.ordinal() + "|" + p1.x + "|" + p1.z + "|" + p1.id);
-						broadcast(ctx, "TB2D_PICKUP|" + PickupKind.REPAIR.ordinal() + "|" + p2.x + "|" + p2.z + "|" + p2.id);
-				}
+        if(ctx.solo || ctx.host) {
+            spawnSharedPickup(ctx,PickupKind.SHIELD,-31f,-22f);
+            spawnSharedPickup(ctx,PickupKind.REPAIR,31f,22f);
+        }
         enemySpawnTimer = 10f; wormSpawnTimer = 9999f; pickupSpawnTimer = 14f;
     }
 
@@ -870,6 +866,15 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
         for (Tank2D t : enemyTanks) {
             if (!t.alive) continue;
             t.fireCooldown = Math.max(0f, t.fireCooldown - tpf);
+            if(t.boss) {
+                int phase=t.hp*3<t.maxHp?2:t.hp*3<t.maxHp*2?1:0;
+                Turret wanted=phase==0?Turret.STURM:phase==1?Turret.DUAL:Turret.FREEZE;
+                if(t.turret!=wanted){
+                    t.turret=wanted;removeTankLights(t);if(t.node!=null)t.node.removeFromParent();
+                    t.node=buildTankNode(ctx,t,t.color);tankRoot.attachChild(t.node);t.fireCooldown=1.2f;
+                    showCenter("КОМАНДИР — ФАЗА "+(phase+1),2f,new ColorRGBA(1,.35f,.15f,1));
+                }
+            }
             updateBotStuckState(t, tpf);
 
             if (t.frozenTimer > 0f) {
@@ -1176,12 +1181,12 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
                 sturmAimCharge = 0f;
                 removeAimLine();
             }
-            shooter.fireCooldown = turretCooldown(turret);
+            shooter.fireCooldown = shooter.boss?3.5f:turretCooldown(turret);
             fireSturmShell(ctx, shooter, dirFromHeading(shooter.heading));
             return;
         }
 
-        float cooldown = turretCooldown(turret);
+        float cooldown = turretCooldown(turret)*(shooter.boss?.65f:1f);
         if (shooter == player && rapidTimer > 0f) cooldown *= 0.45f;
         shooter.fireCooldown = cooldown;
         Vector3f dir = dirFromHeading(shooter.heading);
@@ -1279,7 +1284,11 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
         Beam2D b = new Beam2D(); b.beam = beam; b.glow = glow; b.life = 0.18f; beams.add(b);
     }
 
-    private void updateBullets(SnakeApp.MapContext ctx, float tpf) {
+    private void updateBullets(SnakeApp.MapContext ctx,float tpf) {
+        int steps=Math.max(1,(int)Math.ceil(tpf/(1f/120f)));
+        for(int i=0;i<steps;i++)updateBulletsStep(ctx,tpf/steps);
+    }
+    private void updateBulletsStep(SnakeApp.MapContext ctx, float tpf) {
         Iterator<Bullet2D> it = bullets.iterator();
         while (it.hasNext()) {
             Bullet2D b = it.next();
@@ -1359,8 +1368,9 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
         if (t.node != null) t.node.removeFromParent();
         if (t == player) killPlayerTank(ctx, reason);
         else {
-            kills++; score += t.tankModel == 4 ? 250 : 100;
-            showCenter(t.tankModel == 4 ? "+250 SturmTiger уничтожен" : "+100 Танк уничтожен", 1f, new ColorRGBA(1f, 0.8f, 0.25f, 1f));
+            kills++; score += t.boss?1000:t.tankModel == 4 ? 250 : 100;
+            if(t.boss)spawnSharedPickup(ctx,PickupKind.REPAIR,t.x,t.z);
+            showCenter(t.boss ? "+1000 Командир повержен" : t.tankModel == 4 ? "+250 SturmTiger уничтожен" : "+100 Танк уничтожен", 1f, new ColorRGBA(1f, 0.8f, 0.25f, 1f));
             broadcast(ctx, "TANK_BATTLE_2D_ENEMY_TANK_DEAD");
         }
     }
@@ -1429,31 +1439,42 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
         // v13: оранжевые атакующие змейки/точки полностью отключены.
     }
 
-    private void updatePickups(SnakeApp.MapContext ctx, float tpf) {
-        if (player == null || !player.alive) return;
-        for (Pickup2D p : pickups) {
-            if (!p.active) continue;
-            p.spin += tpf * 2.8f;
-            if (p.node != null) { p.node.setLocalRotation(new Quaternion().fromAngleAxis(p.spin, Vector3f.UNIT_Y)); p.node.setLocalTranslation(p.x, 0.55f + FastMath.sin(p.spin * 1.4f) * 0.18f, p.z); }
-            if (dist2(player.x, player.z, p.x, p.z) < 5.0f) {
-                p.active = false; if (p.node != null) p.node.removeFromParent();
-								
-								if (ctx.solo || ctx.host) {
-										broadcast(ctx, "TB2D_PICKUP_TAKEN|" + p.id);
-								}
-								
-                if (p.kind == PickupKind.SHIELD) { playerShieldTimer = 8f; showCenter("Щит +8 сек.", 1.2f, pickupColor(p.kind)); }
-                else if (p.kind == PickupKind.REPAIR) { player.hp = Math.min(player.maxHp, player.hp + 45); showCenter("Ремонт +45 HP", 1.2f, pickupColor(p.kind)); }
-                else if (p.kind == PickupKind.RAPID) { rapidTimer = 8f; showCenter("Скорострельность +8 сек.", 1.2f, pickupColor(p.kind)); }
-                else if (p.kind == PickupKind.DUAL_CANNON) { dualTimer = 12f; player.dualVisual = true; rebuildPlayerTankVisual(ctx); showCenter("Две пушки +12 сек.", 1.2f, pickupColor(p.kind)); }
-                else if (p.kind == PickupKind.MINE) { mineCharges++; showCenter("Мина получена. Нажми X", 1.2f, pickupColor(p.kind)); }
-                updateTankNode(player);
+    private void updatePickups(SnakeApp.MapContext ctx,float tpf) {
+        if(player==null || !player.alive)return;
+        requestedPickups.replaceAll((id,wait)->wait-tpf);
+        requestedPickups.values().removeIf(wait->wait<=0);
+        for(Pickup2D p:pickups) {
+            if(!p.active)continue;
+            p.spin+=tpf*2.8f;
+            if(p.node!=null){p.node.setLocalRotation(new Quaternion().fromAngleAxis(p.spin,Vector3f.UNIT_Y));p.node.setLocalTranslation(p.x,.55f+FastMath.sin(p.spin*1.4f)*.18f,p.z);}
+            if(dist2(player.x,player.z,p.x,p.z)<5f && !requestedPickups.containsKey(p.id)) {
+                requestedPickups.put(p.id,.6f);
+                if(ctx.solo || ctx.host)grantPickup(ctx,ctx.myIndex,p.id);
+                else broadcast(ctx,"TB2D_TAKE|"+ctx.myIndex+"|"+p.id);
             }
         }
-        if (player != null && player.dualVisual && dualTimer <= 0f && player.turret != Turret.DUAL) {
-            player.dualVisual = false;
-            rebuildPlayerTankVisual(ctx);
+        if(player.dualVisual && dualTimer<=0 && player.turret!=Turret.DUAL){player.dualVisual=false;rebuildPlayerTankVisual(ctx);}
+    }
+    private void spawnSharedPickup(SnakeApp.MapContext ctx,PickupKind kind,float x,float z) {
+        if(ctx==null || (!ctx.solo&&!ctx.host))return;
+        Pickup2D p=spawnPickup(ctx,kind,x,z);
+        if(p!=null&&!ctx.solo)broadcast(ctx,"TB2D_PICKUP|"+kind.ordinal()+"|"+p.x+"|"+p.z+"|"+p.id);
+    }
+    private void grantPickup(SnakeApp.MapContext ctx,int owner,int id) {
+        if(!ctx.host && !ctx.solo)return;
+        Tank2D t=owner==ctx.myIndex?player:remoteTanks.get(owner);if(t==null||!t.alive)return;
+        for(Pickup2D p:pickups)if(p.id==id&&p.active&&dist2(t.x,t.z,p.x,p.z)<8f){
+            broadcast(ctx,"TB2D_GRANT|"+owner+"|"+p.id+"|"+p.kind.ordinal());return;
         }
+    }
+    private void applyPickup(SnakeApp.MapContext ctx,PickupKind kind) {
+        if(player==null || !player.alive)return;
+        if(kind==PickupKind.SHIELD)playerShieldTimer=8f;
+        else if(kind==PickupKind.REPAIR)player.hp=Math.min(player.maxHp,player.hp+45);
+        else if(kind==PickupKind.RAPID)rapidTimer=8f;
+        else if(kind==PickupKind.DUAL_CANNON){dualTimer=12f;player.dualVisual=true;rebuildPlayerTankVisual(ctx);}
+        else if(kind==PickupKind.MINE)mineCharges++;
+        showCenter("Бонус: "+kind,1.2f,pickupColor(kind));
     }
 
     private void rebuildPlayerTankVisual(SnakeApp.MapContext ctx) {
@@ -1582,7 +1603,7 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
                 c.node.setLocalRotation(new Quaternion().fromAngleAxis(c.spin, Vector3f.UNIT_Y));
             }
             if (c.y <= 0.65f) {
-                spawnPickup(lastCtx, c.kind, c.x, c.z);
+                if(ctx.solo || ctx.host)spawnSharedPickup(lastCtx,c.kind,c.x,c.z);
                 spawnParticles(c.x, c.z, pickupColor(c.kind), 18, 1.3f);
                 if (c.node != null) c.node.removeFromParent();
                 dit.remove();
@@ -1843,8 +1864,15 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
         for (Tank2D t : enemyTanks) if (t.alive) aliveTanks++;
 
         wave = 1 + kills / 5;
+        if(wave>=3 && wave/3>lastBossWave && enemyTanks.stream().noneMatch(t->t.alive&&t.boss)){
+            lastBossWave=wave/3;
+            Vector3f at=safeSpawnPoint(30,-22,2.5f);
+            Tank2D boss=createTank(ctx,"Командир",at.x,at.z,FastMath.PI,true,Turret.STURM,new ColorRGBA(.85f,.14f,.10f,1),4,-5000-lastBossWave);
+            boss.boss=true;boss.hp=boss.maxHp=350+wave*35;boss.moveSpeed*=.65f;boss.fireCooldown=3f;
+            showCenter("БОСС: КОМАНДИР. Следи за сменой оружия!",3f,new ColorRGBA(1,.35f,.15f,1));
+        }
 
-        if (enemySpawnTimer <= 0f && aliveTanks < 2 + wave / 3) {
+        if (enemySpawnTimer <= 0f && aliveTanks < Math.min(10,2 + wave / 3)) {
             float x = rng.nextBoolean() ? 32f : -32f;
             float z = -22f + rng.nextFloat() * 44f;
             Turret turret = rng.nextFloat() < 0.12f ? Turret.STURM : Turret.values()[rng.nextInt(4)];
@@ -1858,7 +1886,7 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
 
         if (pickupSpawnTimer <= 0f) {
             Vector3f p = randomSafeSpawnPoint(2.5f);
-            spawnPickup(ctx, randomAirDropKind(), p.x, p.z);
+            spawnSharedPickup(ctx, randomAirDropKind(), p.x, p.z);
             pickupSpawnTimer = 15f + rng.nextFloat() * 8f;
         }
     }
@@ -1873,6 +1901,7 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
     }
 
     private void spawnParticles(float x, float z, ColorRGBA color, int count, float power) {
+        if((lastCtx==null || !lastCtx.particlesEnabled()) || particles.size()>400)return;
         if (lastCtx == null || fxRoot == null) return;
         for (int i = 0; i < count; i++) {
             Particle2D p = new Particle2D();
@@ -2124,75 +2153,10 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
     }
 
     private void buildClouds(SnakeApp.MapContext ctx) {
-        if (ctx == null || cloudRoot == null) return;
+        // The overhead camera must have an unobstructed view of tanks and projectiles.
         clearNode(cloudRoot);
-        cloudMaterial = ctx.unshaded(new ColorRGBA(0.90f, 0.92f, 0.96f, 0.42f));
-        cloudShadowMaterial = ctx.unshaded(new ColorRGBA(0.02f, 0.025f, 0.03f, 0.18f));
-        try {
-            cloudMaterial.getAdditionalRenderState().setBlendMode(RenderState.BlendMode.Alpha);
-            cloudMaterial.getAdditionalRenderState().setDepthWrite(false);
-            cloudShadowMaterial.getAdditionalRenderState().setBlendMode(RenderState.BlendMode.Alpha);
-            cloudShadowMaterial.getAdditionalRenderState().setDepthWrite(false);
-        } catch (Exception ignored) {}
-
-        Random cr = new Random(42);
-        for (int i = 0; i < 25; i++) {
-            Node cloud = new Node("Cloud" + i);
-            float baseRadius = 2.2f + cr.nextFloat() * 3.8f;
-
-            Geometry main = new Geometry("CloudMain", new Sphere(8, 10, baseRadius));
-            main.setMaterial(cloudMaterial);
-            main.setShadowMode(RenderQueue.ShadowMode.Off);
-						main.setQueueBucket(RenderQueue.Bucket.Transparent);
-            cloud.attachChild(main);
-
-            Geometry second = new Geometry("CloudSecond", new Sphere(6, 8, baseRadius * 0.70f));
-            second.setLocalTranslation(baseRadius * 0.8f, 0f, 0f);
-            second.setMaterial(cloudMaterial);
-            second.setShadowMode(RenderQueue.ShadowMode.Off);
-						second.setQueueBucket(RenderQueue.Bucket.Transparent);
-            cloud.attachChild(second);
-
-            Geometry third = new Geometry("CloudThird", new Sphere(5, 7, baseRadius * 0.50f));
-            third.setLocalTranslation(-baseRadius * 0.6f, baseRadius * 0.2f, 0f);
-            third.setMaterial(cloudMaterial);
-            third.setShadowMode(RenderQueue.ShadowMode.Off);
-						third.setQueueBucket(RenderQueue.Bucket.Transparent);
-            cloud.attachChild(third);
-
-            Geometry shadow = new Geometry("CloudSoftShadow", new Box(baseRadius * 1.55f, 0.012f, baseRadius * 0.95f));
-            shadow.setMaterial(cloudShadowMaterial);
-            shadow.setQueueBucket(RenderQueue.Bucket.Transparent);
-            shadow.setLocalTranslation(0f, -16.0f, 0f);
-            cloud.attachChild(shadow);
-
-            cloud.setLocalTranslation(
-                    (cr.nextFloat() - 0.5f) * MAP_HALF_X * 3.0f,
-                    15f + cr.nextFloat() * 9f,
-                    (cr.nextFloat() - 0.5f) * MAP_HALF_Z * 3.0f
-            );
-            cloud.setUserData("speed", 0.25f + cr.nextFloat() * 0.35f);
-            cloudRoot.attachChild(cloud);
-        }
-				// === ДИАГНОСТИКА ОБЛАКОВ ===
-				/* System.out.println("=== CLOUD DIAGNOSTIC ===");
-				int cloudNum = 0;
-				for (Spatial child : cloudRoot.getChildren()) {
-						if (child instanceof Node cloudNode) {
-								System.out.println("Cloud " + cloudNum + " pos: " + child.getLocalTranslation());
-								for (Spatial part : cloudNode.getChildren()) {
-										if (part instanceof Geometry geom) {
-												Material mat = geom.getMaterial();
-												System.out.println("  " + geom.getName() +
-														" bucket=" + geom.getLocalQueueBucket() +
-														" shadow=" + geom.getShadowMode() +
-														" matAlpha=" + (mat != null && mat.getParamValue("Color") instanceof ColorRGBA c ? c.a : "?"));
-										}
-								}
-								cloudNum++;
-						}
-				}
-				System.out.println("=== END CLOUD DIAGNOSTIC ==="); */
+        cloudMaterial = null;
+        cloudShadowMaterial = null;
     }
 
     private void updateClouds(float tpf) {
@@ -2263,14 +2227,14 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
     }
 
     private void updateUiLayout(SnakeApp.MapContext ctx) {
-        if (ctx == null || ctx.camera == null || titleText == null) return;
-        float W = ctx.camera.getWidth(), H = ctx.camera.getHeight();
-        if (uiPanel != null) uiPanel.setLocalTranslation(362f, H - 82f, -1f);
-        titleText.setLocalTranslation(28f, H - 36f, 0f);
-        helpText.setLocalTranslation(28f, H - 66f, 0f);
-        statsText.setLocalTranslation(28f, H - 96f, 0f);
-        turretText.setLocalTranslation(W - 520f, H - 38f, 0f);
-        if (centerText != null && notifyTimer > 0f) centerText.setLocalTranslation(W * 0.5f - centerText.getLineWidth() * 0.5f, H * 0.5f + 45f, 0f);		
+        if(ctx==null || ctx.camera==null || titleText==null)return;
+        float w=ctx.camera.getWidth(),h=ctx.camera.getHeight();
+        float scale=Math.min(1f,w/1050f);
+        if(uiPanel!=null){uiPanel.setLocalTranslation(w*.5f,h-90*scale,-1);uiPanel.setLocalScale(w/700f,1.2f*scale,1);}
+        titleText.setSize(22*scale);helpText.setSize(14*scale);statsText.setSize(16*scale);turretText.setSize(14*scale);
+        titleText.setLocalTranslation(24*scale,h-24*scale,0);helpText.setLocalTranslation(24*scale,h-53*scale,0);
+        statsText.setLocalTranslation(24*scale,h-81*scale,0);turretText.setLocalTranslation(24*scale,h-111*scale,0);
+        if(centerText!=null){centerText.setSize(32*scale);if(notifyTimer>0)centerText.setLocalTranslation(w*.5f-centerText.getLineWidth()*.5f,h*.5f+45*scale,0);}
     }
 
     private void updateUiText() {
@@ -2314,10 +2278,16 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
 				}
 		}
 
+    @Override
+    public void onGameOver(SnakeApp.MapContext ctx) {
+        if (uiRoot != null) uiRoot.setCullHint(Spatial.CullHint.Always);
+    }
+
     private void killPlayerTank(SnakeApp.MapContext ctx, String reason) {
         if (deathTriggered) return;
         deathTriggered = true;
         mode = Mode.FINISHED;
+        if (ctx != null) ctx.setLocalScore(score);
         if (player != null) { player.alive = false; player.hp = 0; if (player.node != null) player.node.removeFromParent(); }
         showCenter("ТАНК УНИЧТОЖЕН", 3.0f, new ColorRGBA(1f, 0.18f, 0.10f, 1f));
         if (ctx != null) { broadcast(ctx, "TB2D_DEAD|" + ctx.myIndex); ctx.killSnake(ctx.myIndex, reason == null ? "танк уничтожен" : reason); }
@@ -2335,7 +2305,15 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
         try {
             String[] p = payload.split("\\|");
             if (p.length == 0 || !p[0].startsWith("TB2D_")) return;
-            if ("TB2D_SEED".equals(p[0]) && p.length >= 2) {
+            if("TB2D_TAKE".equals(p[0]) && p.length>=3){
+                if(ctx.host)grantPickup(ctx,parseInt(p[1],-1),parseInt(p[2],-1));
+            }else if("TB2D_GRANT".equals(p[0]) && p.length>=4){
+                int owner=parseInt(p[1],-1),id=parseInt(p[2],-1);
+                requestedPickups.remove(id);
+                if(!takenPickups.add(id))return;
+                for(Pickup2D pickup:pickups)if(pickup.id==id){pickup.active=false;if(pickup.node!=null)pickup.node.removeFromParent();}
+                if(owner==ctx.myIndex)applyPickup(ctx,pickupByOrdinal(parseInt(p[3],0)));
+            }else if ("TB2D_SEED".equals(p[0]) && p.length >= 2) {
                 if (!ctx.host) { arenaSeed = parseInt(p[1], arenaSeed); seedReceived = true; buildArena(ctx, arenaSeed); }
             } else if ("TB2D_READY".equals(p[0]) && p.length >= 4) {
                 int idx = parseInt(p[1], -1); if (idx == ctx.myIndex) return;
@@ -2344,8 +2322,12 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
                 showCenter("Игрок " + (idx + 1) + " выбрал танк", 2f, new ColorRGBA(0.25f, 0.85f, 1f, 1f));
                 if (localReady && allPlayersReady(ctx) && mode == Mode.GARAGE) startBattle(ctx);
 						} else if ("TB2D_PICKUP".equals(p[0]) && p.length >= 4) {
-								PickupKind kind = pickupByOrdinal(parseInt(p[1], 0));
-								float px = parseFloat(p[2], 0f);
+								if(ctx.host)return;
+                                int incomingId=p.length>=5?parseInt(p[4],-1):-1;
+                                if(takenPickups.contains(incomingId))return;
+                                for(Pickup2D existing:pickups)if(existing.id==incomingId)return;
+                                PickupKind kind = pickupByOrdinal(parseInt(p[1], 0));
+                                float px = parseFloat(p[2], 0f);
 								float pz = parseFloat(p[3], 0f);
 								Pickup2D pu = spawnPickup(ctx, kind, px, pz);
 								if (pu != null && p.length >= 5) {
@@ -2367,10 +2349,10 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
                     getOrCreateRemoteTank(ctx, idx, model, turret, ctx.getPlayerColor(idx));
                 }
             } else if ("TB2D_STATE".equals(p[0]) && p.length >= 10) {
-                int idx = parseInt(p[1], -1); if (idx < 0 || idx == ctx.myIndex) return;
+                int idx = parseInt(p[1], -1); if (idx < 0 || idx>=ctx.players.size() || idx == ctx.myIndex) return;
                 int model = parseInt(p[6], 1);
                 Tank2D rt = getOrCreateRemoteTank(ctx, idx, model, turretByOrdinal(parseInt(p[7], 0)), ctx.getPlayerColor(idx));
-                rt.x = parseFloat(p[2], rt.x); rt.z = parseFloat(p[3], rt.z); rt.heading = parseFloat(p[4], rt.heading); rt.hp = parseInt(p[5], rt.hp); rt.turret = turretByOrdinal(parseInt(p[7], rt.turret.ordinal())); rt.alive = parseInt(p[8], 1) == 1; rt.dualVisual = parseInt(p[9], 0) == 1;
+                rt.x = clamp(parseFloat(p[2], rt.x),-MAP_HALF_X+TANK_RADIUS,MAP_HALF_X-TANK_RADIUS); rt.z = clamp(parseFloat(p[3], rt.z),-MAP_HALF_Z+TANK_RADIUS,MAP_HALF_Z-TANK_RADIUS); rt.heading = parseFloat(p[4], rt.heading); rt.hp = Math.max(0,Math.min(rt.maxHp,parseInt(p[5], rt.hp))); rt.turret = turretByOrdinal(parseInt(p[7], rt.turret.ordinal())); rt.alive = parseInt(p[8], 1) == 1; rt.dualVisual = parseInt(p[9], 0) == 1;
                 updateTankNode(rt);
             } else if ("TB2D_SHOT".equals(p[0]) && p.length >= 7) {
                 int idx = parseInt(p[1], -1); if (idx == ctx.myIndex) return;
@@ -2596,7 +2578,7 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
     private PickupKind pickupByOrdinal(int ordinal) { PickupKind[] values = PickupKind.values(); return values[wrap(ordinal, values.length)]; }
     private String fmt(float v) { return String.format(java.util.Locale.US, "%.3f", v); }
     private int parseInt(String v, int fallback) { try { return Integer.parseInt(v); } catch (Exception e) { return fallback; } }
-    private float parseFloat(String v, float fallback) { try { return Float.parseFloat(v); } catch (Exception e) { return fallback; } }
+    private float parseFloat(String v, float fallback) { try { return ArenaRules.finite(Float.parseFloat(v),fallback); } catch (Exception e) { return fallback; } }
     private int makeLocalSeed(SnakeApp.MapContext ctx) { return 73856093 ^ (ctx == null ? 0 : ctx.mapId.hashCode()) ^ (int)(System.nanoTime() & 0xffff); }
 
     private String turretName(Turret t) { if (t == Turret.FIRE) return "Огненная"; if (t == Turret.FREEZE) return "Заморозка"; if (t == Turret.SNIPER) return "Снайперка"; if (t == Turret.DUAL) return "Две пушки"; if (t == Turret.STURM) return "SturmTiger"; return "Обычная"; }
@@ -2640,7 +2622,7 @@ public class TankBattle2D implements SnakeApp.ExternalMapDef {
 
     private static class Wall2D { float x, z, hx, hz; }
     private static class Tank2D {
-        String name; Node node; Geometry hpBar, headlightL, headlightR, headlightBeamL, headlightBeamR; SpotLight headSpotL, headSpotR; PointLight headPointL, headPointR; float x, z, heading, aiTargetX, aiTargetZ, aiTimer, aiLastX, aiLastZ, aiStuckTimer, aiAvoidHeading, aiAvoidTimer, aiReverseTimer, fireCooldown, frozenTimer, moveSpeed, turnSpeed, trackTimer; int hp, maxHp, tankModel, ownerIndex; boolean bot, alive = true, dualVisual, headlightsAttached, aiInit; Turret turret; ColorRGBA color;
+        String name; Node node; Geometry hpBar, headlightL, headlightR, headlightBeamL, headlightBeamR; SpotLight headSpotL, headSpotR; PointLight headPointL, headPointR; float x, z, heading, aiTargetX, aiTargetZ, aiTimer, aiLastX, aiLastZ, aiStuckTimer, aiAvoidHeading, aiAvoidTimer, aiReverseTimer, fireCooldown, frozenTimer, moveSpeed, turnSpeed, trackTimer; int hp, maxHp, tankModel, ownerIndex; boolean boss, bot, alive = true, dualVisual, headlightsAttached, aiInit; Turret turret; ColorRGBA color;
     }
     private static class Bullet2D { Geometry geo; float x, z, vx, vz, life; int bounces, maxBounces, damage, ownerIndex; Turret turret; Tank2D owner; }
     private static class Worm2D { Node node; final List<WormSeg> segments = new ArrayList<>(); float headX, headZ, heading; int hp; boolean alive = true; }
