@@ -1,0 +1,8 @@
+*.class
+/build/
+/liblwjgl*.so
+/libopenal*.so
+/lwjgl*.dll
+/OpenAL*.dll
+/hs_err_pid*.log
+*.log

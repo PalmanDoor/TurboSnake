@@ -9,9 +9,10 @@ public class GreenArena implements SnakeApp.ExternalMapDef {
         SnakeApp.MapRuntimeSettings s = new SnakeApp.MapRuntimeSettings();
         s.mapHalf = 60f;
         s.snakeSpeed = 8.2f;
-        s.turnSpeed = 2.85f;
+        s.turnSpeed = 3.2f;
         s.maxFood = 20;
         s.allowGrowth = true;
+        s.enableCombat = true;
         s.enableRegularFood = true;
         s.enableBadFood = true;
         s.enableBallRain = true;
@@ -20,8 +21,8 @@ public class GreenArena implements SnakeApp.ExternalMapDef {
         s.enableSandstorm = false;
         s.enableBlackCubesDefault = true;
         s.forceSnakeColor = false;
-        s.cameraDistance = 12f;
-        s.cameraHeight = 6f;
+        s.cameraDistance = 15f;
+        s.cameraHeight = 9f;
         s.cameraLookAhead = 4f;
         s.mode = "classic";
         return s;

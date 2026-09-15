@@ -9,9 +9,10 @@ public class SpikePits implements SnakeApp.ExternalMapDef {
         SnakeApp.MapRuntimeSettings s = new SnakeApp.MapRuntimeSettings();
         s.mapHalf = 40f;
         s.snakeSpeed = 8.0f;
-        s.turnSpeed = 2.9f;
+        s.turnSpeed = 3.3f;
         s.maxFood = 18;
         s.allowGrowth = true;
+        s.enableCombat = true;
         s.enableRegularFood = true;
         s.enableBadFood = true;
         s.enableBallRain = true;
@@ -21,7 +22,7 @@ public class SpikePits implements SnakeApp.ExternalMapDef {
         s.enableBlackCubesDefault = true;
         s.forceSnakeColor = false;
         s.cameraDistance = 12.5f;
-        s.cameraHeight = 6.8f;
+        s.cameraHeight = 9f;
         s.cameraLookAhead = 4.0f;
         s.mode = "hazard";
         return s;
